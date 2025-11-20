@@ -47,6 +47,10 @@ import { ref, shallowRef, onMounted, onUnmounted, watch, computed, nextTick, mar
 import L from 'leaflet';
 import { INITIAL_CENTER, INITIAL_ZOOM, MAX_ZOOM, DrawingTool, TOOL_ICONS } from '../constants.js';
 
+// The map allows zooming beyond the base MAX_ZOOM (18) up to 20.
+// We only show popups at the absolute maximum zoom level.
+const MAP_MAX_ZOOM = MAX_ZOOM + 2;
+
 // Base size for markers at MAX_ZOOM (Level 18) in pixels
 const MARKER_BASE_SIZE_MAX_ZOOM = 5;
 
@@ -122,7 +126,7 @@ const updateLayerStyles = () => {
     if (!mapInstance.value || !drawingLayerGroup.value) return;
     const currentZoom = mapInstance.value.getZoom();
     const opacity = props.isTransparent ? 0.5 : 1.0;
-    const isMaxZoom = currentZoom >= MAX_ZOOM;
+    const isMaxZoom = currentZoom >= MAP_MAX_ZOOM;
     
     if (!isMaxZoom) {
         mapInstance.value.closePopup();
@@ -149,8 +153,20 @@ const updateLayerStyles = () => {
                 }
             }
             
-            if (layer.getPopup()) {
-                layer.getPopup().options.offset = [0, verticalOffset];
+            // Popup Management: Only bind/show at MAX_ZOOM
+            if (isMaxZoom) {
+                if (!layer.getPopup() && layer.options.customPopupContent) {
+                    layer.bindPopup(layer.options.customPopupContent, {
+                        ...layer.options.customPopupOptions,
+                        offset: [0, verticalOffset]
+                    });
+                } else if (layer.getPopup()) {
+                    layer.getPopup().options.offset = [0, verticalOffset];
+                }
+            } else {
+                if (layer.getPopup()) {
+                    layer.unbindPopup();
+                }
             }
             
             const iconEl = layer.getElement();
@@ -257,15 +273,20 @@ const renderDrawings = () => {
                 </div>
                 `;
 
-                layer.bindPopup(popupContent, {
+                const popupOptions = {
                     closeButton: false,
                     offset: [0, verticalOffset],
                     className: 'custom-popup marker-popup-custom'
-                });
+                };
+
+                layer.options.customPopupContent = popupContent;
+                layer.options.customPopupOptions = popupOptions;
+
+                layer.bindPopup(popupContent, popupOptions);
 
                 let closeTimer = null;
                 layer.on('mouseover', function() {
-                if (mapInstance.value.getZoom() < MAX_ZOOM) return;
+                if (mapInstance.value.getZoom() < MAP_MAX_ZOOM) return;
                 if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
                 const tooltip = this.getTooltip();
                 if (tooltip) {
@@ -293,7 +314,7 @@ const renderDrawings = () => {
                         this.closePopup();
                         if (tooltip) {
                             const el = tooltip.getElement();
-                            if (el && mapInstance.value.getZoom() >= MAX_ZOOM) {
+                            if (el && mapInstance.value.getZoom() >= MAP_MAX_ZOOM) {
                                 el.classList.remove('hover-hidden');
                             }
                         }
@@ -594,7 +615,7 @@ onMounted(() => {
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap, &copy; CARTO',
         subdomains: 'abcd',
-        maxZoom: MAX_ZOOM + 2 
+        maxZoom: MAP_MAX_ZOOM 
     }).addTo(map);
 
     drawingLayerGroup.value = markRaw(L.layerGroup().addTo(map));
