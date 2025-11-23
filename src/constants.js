@@ -4,8 +4,8 @@ export const INITIAL_ZOOM = 13;
 export const MAX_ZOOM = 18;
 
 export const DRAWING_COLORS = [
-  '#FFFFFF', // White
   '#000000', // Black
+  '#FFFFFF', // White
   '#525252', // Neutral 700
   '#9CA3AF', // Gray 400
   '#EF4444', // Red 500

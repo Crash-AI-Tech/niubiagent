@@ -76,6 +76,7 @@ const isDrawingActive = ref(false);
 const isPanning = ref(false);
 const lastPanPos = ref(null);
 const isErasing = ref(false);
+const lastTouchLatLng = ref(null); // Add this for touch handling
 
 const showMarkerInput = ref(false);
 const markerText = ref('');
@@ -180,7 +181,9 @@ const updateLayerStyles = () => {
             // Width at this zoom
             const currentWeight = getPhysicalDimension(baseWeight, currentZoom);
             // Radius is half width. Ensure min size prevents vanishing.
-            layer.setRadius(Math.max(0.05, currentWeight / 2));
+            // We use a very small min size (0.01) to allow it to shrink visually with the line,
+            // but prevent it from disappearing completely or throwing errors.
+            layer.setRadius(Math.max(0.01, currentWeight / 2));
             layer.setStyle({ 
                 opacity: opacity, 
                 fillOpacity: opacity 
@@ -204,7 +207,7 @@ const updateLayerStyles = () => {
             const style = { opacity: opacity, fillOpacity: opacity };
 
             if (tempLayer.value instanceof L.CircleMarker) {
-                tempLayer.value.setRadius(Math.max(0.05, currentWeight / 2));
+                tempLayer.value.setRadius(Math.max(0.01, currentWeight / 2));
                 tempLayer.value.setStyle(style);
             } else if (tempLayer.value instanceof L.Polyline) {
                 tempLayer.value.setStyle({ 
@@ -286,6 +289,26 @@ const renderDrawings = () => {
                 layer.bindPopup(popupContent, popupOptions);
 
                 let closeTimer = null;
+                
+                // Click handler for mobile/tablet support and explicit interaction
+                layer.on('click', function(e) {
+                    L.DomEvent.stopPropagation(e);
+                    if (closeTimer) {
+                        clearTimeout(closeTimer);
+                        closeTimer = null;
+                    }
+                    this.openPopup();
+                    
+                    // Add visual feedback
+                    requestAnimationFrame(() => {
+                        const popup = this.getPopup();
+                        if (popup) {
+                            const el = popup.getElement();
+                            if (el) el.classList.add('popup-visible');
+                        }
+                    });
+                });
+
                 layer.on('mouseover', function() {
                 if (mapInstance.value.getZoom() < MAP_MAX_ZOOM) return;
                 if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
@@ -343,7 +366,7 @@ const renderDrawings = () => {
                 layer = L.circleMarker(drawing.points[0], {
                     ...pathOptions,
                     stroke: false,
-                    radius: Math.max(0.05, currentWeight / 2), 
+                    radius: Math.max(0.01, currentWeight / 2), 
                 });
             } else {
                 // Multiple points: Polyline
@@ -403,7 +426,7 @@ const renderTempDrawing = () => {
                 tempLayer.value = L.circleMarker(currentPoints.value[0], {
                 ...pathOptions,
                 stroke: false,
-                radius: Math.max(0.05, currentWeight / 2)
+                radius: Math.max(0.01, currentWeight / 2)
             }).addTo(mapInstance.value);
         } else {
             // Line: Weight = Width
@@ -565,6 +588,16 @@ const handleGlobalMouseUp = () => {
     }
 };
 
+const handleGlobalTouchEnd = () => {
+    if (isDrawingActive.value) {
+        isDrawingActive.value = false;
+        finishDrawing();
+    }
+    if (isErasing.value) {
+        isErasing.value = false;
+    }
+};
+
 const updateMapInteraction = () => {
     if (!mapInstance.value) return;
     const container = mapInstance.value.getContainer();
@@ -572,6 +605,7 @@ const updateMapInteraction = () => {
     if (props.tool === DrawingTool.HAND) {
         mapInstance.value.dragging.enable();
         container.style.cursor = 'grab';
+        container.style.touchAction = 'auto';
     } else {
         mapInstance.value.dragging.disable(); 
         if (props.tool === DrawingTool.ERASER) {
@@ -579,6 +613,128 @@ const updateMapInteraction = () => {
         } else {
             container.style.cursor = 'crosshair';
         }
+        container.style.touchAction = 'none';
+    }
+};
+
+// Touch Event Handlers
+const checkEraserHit = (latlng) => {
+    if (!mapInstance.value || !drawingLayerGroup.value) return;
+    
+    const point = mapInstance.value.latLngToContainerPoint(latlng);
+    const tolerance = 15; // Increased tolerance for touch
+
+    drawingLayerGroup.value.eachLayer((layer) => {
+        const d = layer.options.drawingData;
+        if (!d) return;
+        
+        // Check ownership
+        const isOwner = d.user_id === props.user || d.author === props.user || (props.userEmail && d.author === props.userEmail);
+        if (!isOwner) return;
+
+        if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
+            const layerPoint = mapInstance.value.latLngToContainerPoint(layer.getLatLng());
+            const dist = layerPoint.distanceTo(point);
+            if (dist < tolerance + 10) { 
+                emit('remove-drawing', d.id);
+            }
+        } else if (layer instanceof L.Polyline) {
+            const points = layer.getLatLngs();
+            // Handle potential nested arrays
+            const flatPoints = (points.length > 0 && Array.isArray(points[0])) ? points.flat() : points;
+            
+            for (let i = 0; i < flatPoints.length - 1; i++) {
+                const p1 = mapInstance.value.latLngToContainerPoint(flatPoints[i]);
+                const p2 = mapInstance.value.latLngToContainerPoint(flatPoints[i+1]);
+                const dist = L.LineUtil.pointToSegmentDistance(point, p1, p2);
+                if (dist < tolerance + (layer.options.weight || 5) / 2) {
+                    emit('remove-drawing', d.id);
+                    return; 
+                }
+            }
+        }
+    });
+};
+
+const handleTouchStart = (e) => {
+    // Allow multi-touch (zoom/pan)
+    if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return;
+    
+    if (props.tool === DrawingTool.HAND) return;
+
+    // Prevent default to stop scrolling/zooming while drawing
+    // Important: This must be paired with touch-action: none in CSS for best results
+    L.DomEvent.stopPropagation(e);
+    if (e.cancelable) {
+        e.originalEvent.preventDefault();
+    }
+
+    lastTouchLatLng.value = e.latlng;
+
+    if (props.tool === DrawingTool.BRUSH) {
+        isDrawingActive.value = true;
+        const newPoint = [e.latlng.lat, e.latlng.lng];
+        currentPoints.value = [newPoint];
+        renderTempDrawing();
+    } else if (props.tool === DrawingTool.ERASER) {
+        isErasing.value = true;
+        checkEraserHit(e.latlng);
+    }
+};
+
+const handleTouchMove = (e) => {
+    if (e.originalEvent.touches && e.originalEvent.touches.length > 1) return;
+    if (props.tool === DrawingTool.HAND) return;
+
+    L.DomEvent.stopPropagation(e);
+    if (e.cancelable) {
+        e.originalEvent.preventDefault();
+    }
+
+    lastTouchLatLng.value = e.latlng;
+
+    if (isDrawingActive.value && props.tool === DrawingTool.BRUSH) {
+        const newPoint = [e.latlng.lat, e.latlng.lng];
+        currentPoints.value.push(newPoint);
+        
+        if (tempLayer.value && mapInstance.value) {
+            // Check explicit types for optimized updates
+            if (tempLayer.value instanceof L.Polyline && !(tempLayer.value instanceof L.CircleMarker)) {
+                    try {
+                    tempLayer.value.setLatLngs(currentPoints.value);
+                    } catch (err) {
+                    renderTempDrawing();
+                    }
+            } else {
+                renderTempDrawing();
+            }
+        }
+    } else if (isErasing.value && props.tool === DrawingTool.ERASER) {
+        checkEraserHit(e.latlng);
+    }
+};
+
+const handleTouchEnd = (e) => {
+    if (props.tool === DrawingTool.HAND) return;
+
+    if (isDrawingActive.value) {
+        isDrawingActive.value = false;
+        finishDrawing();
+    }
+    if (isErasing.value) {
+        isErasing.value = false;
+    }
+    
+    if (props.tool === DrawingTool.MARKER && lastTouchLatLng.value) {
+        // Use the last known touch position for marker placement
+        const newPoint = [lastTouchLatLng.value.lat, lastTouchLatLng.value.lng];
+        pendingMarkerPos.value = newPoint;
+        markerText.value = ''; 
+        showMarkerInput.value = true;
+        nextTick(() => {
+            if (markerInputRef.value) markerInputRef.value.focus();
+        });
+        lastTouchLatLng.value = null;
     }
 };
 
@@ -624,6 +780,12 @@ onMounted(() => {
     map.on('mousedown', handleMouseDown);
     map.on('mousemove', handleMouseMove);
     map.on('mouseup', handleMouseUp);
+    
+    // Add Touch Listeners
+    map.on('touchstart', handleTouchStart);
+    map.on('touchmove', handleTouchMove);
+    map.on('touchend', handleTouchEnd);
+
     map.on('zoom', updateLayerStyles);
     
     // Save view state on moveend
@@ -637,6 +799,7 @@ onMounted(() => {
     });
     
     window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('touchend', handleGlobalTouchEnd);
 
     renderDrawings();
     updateMapInteraction();
@@ -654,10 +817,17 @@ onUnmounted(() => {
         mapInstance.value.off('mousedown', handleMouseDown);
         mapInstance.value.off('mousemove', handleMouseMove);
         mapInstance.value.off('mouseup', handleMouseUp);
+        
+        // Remove Touch Listeners
+        mapInstance.value.off('touchstart', handleTouchStart);
+        mapInstance.value.off('touchmove', handleTouchMove);
+        mapInstance.value.off('touchend', handleTouchEnd);
+
         mapInstance.value.remove();
         mapInstance.value = null;
     }
     window.removeEventListener('mouseup', handleGlobalMouseUp);
+    window.removeEventListener('touchend', handleGlobalTouchEnd);
 });
 
 watch(() => props.drawings, renderDrawings, { deep: true });
