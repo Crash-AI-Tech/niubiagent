@@ -80,6 +80,7 @@ const isLoadingDrawings = ref(true);
 const loadError = ref(null);
 const actionHistory = ref([]);
 const isUndoing = ref(false);
+const currentBounds = ref(null);
 
 const userEmail = computed(() => session.value?.user?.email);
 const user = computed(() => session.value?.user);
@@ -130,16 +131,30 @@ async function refreshSession() {
           
           if (recoveredSession) {
               console.log('App: Manually recovered session from storage:', recoveredSession.user.email);
-              session.value = recoveredSession;
               
-              // Try to notify Supabase client, but don't block
-              supabase.auth.setSession({
-                  access_token: recoveredSession.access_token,
-                  refresh_token: recoveredSession.refresh_token
-              }).then(({ error }) => {
-                  if (error) console.warn('App: Client sync warning:', error.message);
-                  else console.log('App: Client synced with recovered session');
-              }).catch(err => console.warn('App: Client sync failed:', err));
+              // Await the session sync to ensure token is valid/refreshed before proceeding
+              try {
+                  const { data: syncData, error: syncError } = await supabase.auth.setSession({
+                      access_token: recoveredSession.access_token,
+                      refresh_token: recoveredSession.refresh_token
+                  });
+
+                  if (syncError) {
+                      console.warn('App: Client sync failed:', syncError.message);
+                      // If sync fails (e.g. invalid refresh token), clear the invalid session
+                      session.value = null;
+                  } else if (syncData?.session) {
+                      console.log('App: Client synced and session refreshed');
+                      // Update with the potentially refreshed session
+                      session.value = syncData.session;
+                  } else {
+                      // Fallback if setSession returns no session but no error (rare)
+                      session.value = recoveredSession;
+                  }
+              } catch (syncErr) {
+                  console.warn('App: Client sync exception:', syncErr);
+                  session.value = recoveredSession; // Best effort
+              }
               
           } else {
               console.log('App: No session found in localStorage.');
@@ -272,6 +287,7 @@ function debounce(func, wait) {
 // Viewport Logic
 const handleViewportChange = debounce((bounds) => {
     console.log('App: Viewport changed:', bounds);
+    currentBounds.value = bounds;
     fetchDrawings(bounds);
 }, 500); // 500ms debounce
 
@@ -669,7 +685,16 @@ onMounted(async () => {
     // 3. Subscribe to Realtime
     subscribeToDrawings();
 
-    // 4. Listen for Auth Changes (Login/Logout/Token Refresh)
+    // 4. Force fetch drawings to ensure we have data after session restore
+    // Only fetch if we haven't received bounds yet (to avoid double fetch if map is fast)
+    if (!currentBounds.value) {
+        console.log('App: Session ready, force fetching global drawings...');
+        fetchDrawings(null);
+    } else {
+        console.log('App: Session ready, bounds already present, skipping force fetch.');
+    }
+
+    // 5. Listen for Auth Changes (Login/Logout/Token Refresh)
     supabase.auth.onAuthStateChange((_event, _session) => {
         console.log('App: onAuthStateChange:', _event, _session ? 'Session Present' : 'No Session');
         
