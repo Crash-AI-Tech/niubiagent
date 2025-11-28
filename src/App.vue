@@ -12,6 +12,7 @@
       :is-transparent="isTransparent"
       @add-drawing="addDrawing"
       @remove-drawing="removeDrawing"
+      @update-drawing="updateDrawing"
       @viewport-change="handleViewportChange"
     />
     
@@ -77,6 +78,8 @@ const mapCanvasRef = ref(null);
 const userProfile = ref(null);
 const isLoadingDrawings = ref(true);
 const loadError = ref(null);
+const actionHistory = ref([]);
+const isUndoing = ref(false);
 
 const userEmail = computed(() => session.value?.user?.email);
 const user = computed(() => session.value?.user);
@@ -153,7 +156,8 @@ async function signOut() {
   // 1. Clear local state immediately
   session.value = null;
   currentTool.value = DrawingTool.HAND;
-  drawings.value = []; // Optional: Clear drawings on logout if desired, or keep them visible
+  drawings.value = []; 
+  actionHistory.value = []; // Optional: Clear drawings on logout if desired, or keep them visible
   
   // 2. Clear localStorage manually (Supabase v2 keys)
   try {
@@ -415,8 +419,9 @@ async function addDrawing(drawingData) {
     }
 
     // Create Optimistic Drawing Object
-    const tempId = 'temp-' + Date.now() + Math.random();
+    const tempId = drawingData.id || ('temp-' + Date.now() + Math.random());
     const newDrawing = {
+        id: drawingData.id,
         user_id: userId.value,
         user_name: userProfile.value?.user_name || user.value?.user_metadata?.user_name || 'Unknown',
         tool: drawingData.tool,
@@ -424,7 +429,7 @@ async function addDrawing(drawingData) {
         weight: drawingData.weight,
         points: rawPoints,
         text: drawingData.text,
-        created_zoom: drawingData.createdZoom,
+        created_zoom: drawingData.createdZoom || drawingData.created_zoom,
         center_lat: centerLat,
         center_lng: centerLng
     };
@@ -453,6 +458,11 @@ async function addDrawing(drawingData) {
         
         if (data) {
             console.log('App: Drawing saved successfully (Client):', data);
+            
+            if (!isUndoing.value) {
+                actionHistory.value.push({ type: 'ADD', id: data.id });
+            }
+
             // Replace optimistic drawing with real one
             const index = drawings.value.findIndex(d => d.id === tempId);
             if (index !== -1) {
@@ -491,6 +501,10 @@ async function addDrawing(drawingData) {
             
             const savedItem = Array.isArray(rawData) ? rawData[0] : rawData;
             
+            if (!isUndoing.value) {
+                actionHistory.value.push({ type: 'ADD', id: savedItem.id });
+            }
+
             // Replace optimistic drawing with real one
             const index = drawings.value.findIndex(d => d.id === tempId);
             if (index !== -1) {
@@ -514,26 +528,109 @@ async function addDrawing(drawingData) {
 
 async function removeDrawing(id) {
     if (!userId.value) return;
-    
+
+    // History Tracking
+    if (!isUndoing.value) {
+        const drawing = drawings.value.find(d => d.id === id);
+        if (drawing) {
+            actionHistory.value.push({ 
+                type: 'REMOVE', 
+                drawing: JSON.parse(JSON.stringify(drawing)) 
+            });
+        }
+    }
+
+    // Optimistic remove
+    const index = drawings.value.findIndex(d => d.id === id);
+    if (index !== -1) {
+        drawings.value.splice(index, 1);
+    }
+
     const { error } = await supabase.from('drawings').delete().eq('id', id).eq('user_id', userId.value);
     if (error) {
         console.error('Error removing drawing:', error);
+        // Revert if needed, but for delete usually we just accept it might fail silently or refresh
+        fetchDrawings(); 
+    }
+}
+
+async function updateDrawing(updatedDrawing) {
+    if (!userId.value) return;
+
+    // History Tracking
+    if (!isUndoing.value) {
+        const oldDrawing = drawings.value.find(d => d.id === updatedDrawing.id);
+        if (oldDrawing) {
+            actionHistory.value.push({ 
+                type: 'UPDATE', 
+                id: updatedDrawing.id,
+                prevPoints: JSON.parse(JSON.stringify(oldDrawing.points)),
+                newPoints: JSON.parse(JSON.stringify(updatedDrawing.points))
+            });
+        }
+    }
+
+    // Optimistic Update
+    const index = drawings.value.findIndex(d => d.id === updatedDrawing.id);
+    if (index !== -1) {
+        // Create a new object to trigger reactivity
+        const newDrawing = { ...drawings.value[index], ...updatedDrawing, isSyncing: true };
+        drawings.value.splice(index, 1, newDrawing);
+    }
+
+    try {
+        const { error } = await supabase
+            .from('drawings')
+            .update({ 
+                points: updatedDrawing.points,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', updatedDrawing.id)
+            .eq('user_id', userId.value);
+
+        if (error) throw error;
+        
+        // Update success state
+        const newIndex = drawings.value.findIndex(d => d.id === updatedDrawing.id);
+        if (newIndex !== -1) {
+             drawings.value[newIndex].isSyncing = false;
+        }
+
+    } catch (err) {
+        console.error('Error updating drawing:', err);
+        // Revert on error
+        fetchDrawings();
     }
 }
 
 async function undoLastDrawing() {
     if (!userId.value) return;
-    
-    const { data, error } = await supabase
-        .from('drawings')
-        .select('id')
-        .eq('user_id', userId.value)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
+    if (actionHistory.value.length === 0) return;
 
-    if (data) {
-        await removeDrawing(data.id);
+    const lastAction = actionHistory.value.pop();
+    isUndoing.value = true;
+
+    try {
+        console.log('App: Undoing action:', lastAction.type);
+        
+        if (lastAction.type === 'ADD') {
+            await removeDrawing(lastAction.id);
+        } 
+        else if (lastAction.type === 'REMOVE') {
+            // Restore the drawing
+            await addDrawing(lastAction.drawing);
+        } 
+        else if (lastAction.type === 'UPDATE') {
+            // Revert points
+            await updateDrawing({ 
+                id: lastAction.id, 
+                points: lastAction.prevPoints 
+            });
+        }
+    } catch (e) {
+        console.error('App: Undo failed:', e);
+    } finally {
+        isUndoing.value = false;
     }
 }
 

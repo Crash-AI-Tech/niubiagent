@@ -109,23 +109,39 @@
         <!-- Secondary Toolbar (Color & Size) - Only show when drawing -->
         <div v-if="isDrawingTool" class="px-4 py-3 bg-white/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/50 flex items-center gap-6 animate-fade-in-up">
              <!-- Size Slider (Only for Brush) -->
-             <div v-if="currentTool === 'BRUSH'" class="flex items-center gap-3">
-                <span class="text-xs font-bold text-gray-500 uppercase tracking-wider">Size</span>
-                <input 
-                    type="range" 
-                    min="0.1" 
-                    max="1.0" 
-                    step="0.1"
-                    :value="brushSize" 
-                    @input="$emit('update:brushSize', parseFloat($event.target.value))"
-                    class="w-24 h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:accent-blue-700"
-                />
-                <span class="text-xs font-mono font-medium text-gray-600 w-8 text-right">{{ brushSize }}</span>
-                <div class="w-px h-6 bg-gray-300 mx-1"></div>
+             <div v-if="currentTool === 'BRUSH'" class="flex items-center gap-4">
+                <div class="flex flex-col items-center gap-1">
+                    <!-- Max Value Label -->
+                    <span class="text-[10px] font-bold text-gray-400">1.0</span>
+                    
+                    <!-- Vertical Slider Container -->
+                    <div class="relative w-6 h-24 flex items-center justify-center">
+                        <input 
+                            type="range" 
+                            min="0.1" 
+                            max="1.0" 
+                            step="0.1"
+                            :value="brushSize" 
+                            @input="$emit('update:brushSize', parseFloat($event.target.value))"
+                            class="absolute w-24 h-1 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600 hover:accent-blue-700 -rotate-90"
+                        />
+                    </div>
+                    
+                    <!-- Min Value Label -->
+                    <span class="text-[10px] font-bold text-gray-400">0.1</span>
+                </div>
+
+                <!-- Current Value Display -->
+                <div class="flex flex-col items-center justify-center w-10">
+                    <span class="text-xs font-bold text-gray-500 uppercase mb-1">Size</span>
+                    <span class="text-xl font-mono font-bold text-blue-600">{{ brushSize.toFixed(1) }}</span>
+                </div>
+
+                <div class="w-px h-24 bg-gray-300 mx-1"></div>
             </div>
 
             <!-- Colors -->
-            <div class="grid grid-cols-8 sm:grid-cols-16 gap-1">
+            <div class="grid gap-1" style="grid-template-columns: repeat(14, minmax(0, 1fr));">
                 <button
                 v-for="color in colors"
                 :key="color"
