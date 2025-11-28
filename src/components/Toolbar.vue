@@ -117,7 +117,7 @@
             </div>
 
             <!-- Colors -->
-            <div class="flex items-center gap-2">
+            <div class="grid grid-cols-8 sm:grid-cols-16 gap-1">
                 <button
                 v-for="color in colors"
                 :key="color"
