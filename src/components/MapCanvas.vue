@@ -750,8 +750,11 @@ const handleTouchStart = (e) => {
 
     lastTouchLatLng.value = latlng;
 
-    // Delay drawing start by 50ms to detect multi-touch gestures (pinch-to-zoom)
-    touchStartTimer.value = setTimeout(() => {
+    // Check if input is from a stylus (Apple Pencil)
+    // Stylus input doesn't need delay as it won't trigger pinch-to-zoom
+    const isStylus = touch.touchType === 'stylus';
+
+    if (isStylus) {
         if (props.tool === DrawingTool.BRUSH) {
             isDrawingActive.value = true;
             const newPoint = [latlng.lat, latlng.lng];
@@ -761,8 +764,21 @@ const handleTouchStart = (e) => {
             isErasing.value = true;
             checkEraserHit(latlng);
         }
-        touchStartTimer.value = null;
-    }, 50);
+    } else {
+        // Delay drawing start by 50ms to detect multi-touch gestures (pinch-to-zoom) for fingers
+        touchStartTimer.value = setTimeout(() => {
+            if (props.tool === DrawingTool.BRUSH) {
+                isDrawingActive.value = true;
+                const newPoint = [latlng.lat, latlng.lng];
+                currentPoints.value = [newPoint];
+                renderTempDrawing();
+            } else if (props.tool === DrawingTool.ERASER) {
+                isErasing.value = true;
+                checkEraserHit(latlng);
+            }
+            touchStartTimer.value = null;
+        }, 50);
+    }
 };
 
 const handleTouchMove = (e) => {
