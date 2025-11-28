@@ -81,6 +81,7 @@ const isPanning = ref(false);
 const lastPanPos = ref(null);
 const isErasing = ref(false);
 const lastTouchLatLng = ref(null); // Add this for touch handling
+const touchStartTimer = ref(null); // Timer for touch delay
 
 const showMarkerInput = ref(false);
 const markerText = ref('');
@@ -718,7 +719,19 @@ const checkEraserHit = (latlng) => {
 
 const handleTouchStart = (e) => {
     // Allow multi-touch (zoom/pan) if not drawing
-    if (e.touches.length > 1) return;
+    if (e.touches.length > 1) {
+        if (touchStartTimer.value) {
+            clearTimeout(touchStartTimer.value);
+            touchStartTimer.value = null;
+        }
+        // If drawing already started (rare), cancel it
+        if (isDrawingActive.value) {
+            isDrawingActive.value = false;
+            currentPoints.value = [];
+            renderTempDrawing();
+        }
+        return;
+    }
     
     if (props.tool === DrawingTool.HAND) return;
 
@@ -737,25 +750,56 @@ const handleTouchStart = (e) => {
 
     lastTouchLatLng.value = latlng;
 
-    if (props.tool === DrawingTool.BRUSH) {
-        isDrawingActive.value = true;
-        const newPoint = [latlng.lat, latlng.lng];
-        currentPoints.value = [newPoint];
-        renderTempDrawing();
-    } else if (props.tool === DrawingTool.ERASER) {
-        isErasing.value = true;
-        checkEraserHit(latlng);
-    }
+    // Delay drawing start by 50ms to detect multi-touch gestures (pinch-to-zoom)
+    touchStartTimer.value = setTimeout(() => {
+        if (props.tool === DrawingTool.BRUSH) {
+            isDrawingActive.value = true;
+            const newPoint = [latlng.lat, latlng.lng];
+            currentPoints.value = [newPoint];
+            renderTempDrawing();
+        } else if (props.tool === DrawingTool.ERASER) {
+            isErasing.value = true;
+            checkEraserHit(latlng);
+        }
+        touchStartTimer.value = null;
+    }, 50);
 };
 
 const handleTouchMove = (e) => {
-    if (e.touches.length > 1) return;
+    if (e.touches.length > 1) {
+        if (touchStartTimer.value) {
+            clearTimeout(touchStartTimer.value);
+            touchStartTimer.value = null;
+        }
+        if (isDrawingActive.value) {
+            isDrawingActive.value = false;
+            currentPoints.value = [];
+            renderTempDrawing();
+        }
+        return;
+    }
+    
     if (props.tool === DrawingTool.HAND) return;
 
     if (e.cancelable) {
         e.preventDefault();
     }
     e.stopPropagation();
+
+    // If timer exists (drawing hasn't started yet), start immediately for responsiveness
+    if (touchStartTimer.value) {
+        clearTimeout(touchStartTimer.value);
+        touchStartTimer.value = null;
+        
+        if (props.tool === DrawingTool.BRUSH && !isDrawingActive.value) {
+             isDrawingActive.value = true;
+             if (lastTouchLatLng.value) {
+                 currentPoints.value = [[lastTouchLatLng.value.lat, lastTouchLatLng.value.lng]];
+             }
+        } else if (props.tool === DrawingTool.ERASER) {
+            isErasing.value = true;
+        }
+    }
 
     const touch = e.touches[0];
     const container = mapInstance.value.getContainer();

@@ -1,5 +1,5 @@
 
-export const INITIAL_CENTER = [51.505, -0.09];
+export const INITIAL_CENTER = [22.551952664769914, 113.88300643297055];
 export const INITIAL_ZOOM = 13;
 export const MAX_ZOOM = 18;
 
