@@ -68,7 +68,7 @@ const props = defineProps({
   isTransparent: Boolean
 });
 
-const emit = defineEmits(['add-drawing', 'remove-drawing']);
+const emit = defineEmits(['add-drawing', 'remove-drawing', 'viewport-change']);
 
 const mapInstance = shallowRef(null);
 const drawingLayerGroup = shallowRef(null);
@@ -931,6 +931,16 @@ onMounted(() => {
             center: [center.lat, center.lng],
             zoom: zoom
         }));
+
+        // Emit viewport change
+        const bounds = map.getBounds();
+        emit('viewport-change', {
+            minLat: bounds.getSouth(),
+            maxLat: bounds.getNorth(),
+            minLng: bounds.getWest(),
+            maxLng: bounds.getEast(),
+            zoom: zoom
+        });
     });
     
     window.addEventListener('mouseup', handleGlobalMouseUp);
@@ -943,6 +953,16 @@ onMounted(() => {
     setTimeout(() => {
         if (mapInstance.value) {
             mapInstance.value.invalidateSize();
+            
+            // Initial viewport emit
+            const bounds = mapInstance.value.getBounds();
+            emit('viewport-change', {
+                minLat: bounds.getSouth(),
+                maxLat: bounds.getNorth(),
+                minLng: bounds.getWest(),
+                maxLng: bounds.getEast(),
+                zoom: mapInstance.value.getZoom()
+            });
         }
     }, 100);
 });

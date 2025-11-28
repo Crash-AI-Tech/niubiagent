@@ -1,13 +1,5 @@
 <template>
   <div class="relative w-screen h-screen font-sans overflow-hidden">
-    <!-- Loading Indicator -->
-    <div v-if="isLoadingDrawings" class="absolute inset-0 z-[3000] flex items-center justify-center bg-black/30 backdrop-blur-sm">
-      <div class="bg-white rounded-2xl shadow-2xl p-8 flex flex-col items-center gap-4">
-        <div class="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-        <p class="text-gray-700 font-medium">正在加载历史数据...</p>
-      </div>
-    </div>
-    
     <!-- Map is always visible -->
     <MapCanvas
       ref="mapCanvasRef"
@@ -20,6 +12,7 @@
       :is-transparent="isTransparent"
       @add-drawing="addDrawing"
       @remove-drawing="removeDrawing"
+      @viewport-change="handleViewportChange"
     />
     
     <!-- Toolbar handles tool selection and login requests -->
@@ -31,6 +24,7 @@
       :current-color="currentColor"
       :brush-size="brushSize"
       :is-transparent="isTransparent"
+      :is-loading="isLoadingDrawings"
       @update:currentTool="currentTool = $event"
       @update:currentColor="currentColor = $event"
       @update:brushSize="brushSize = $event"
@@ -261,25 +255,53 @@ async function fetchUserProfile() {
     }
 }
 
+// Utility: Debounce
+function debounce(func, wait) {
+  let timeout;
+  return function(...args) {
+    const context = this;
+    clearTimeout(timeout);
+    timeout = setTimeout(() => func.apply(context, args), wait);
+  };
+}
+
+// Viewport Logic
+const handleViewportChange = debounce((bounds) => {
+    console.log('App: Viewport changed:', bounds);
+    fetchDrawings(bounds);
+}, 500); // 500ms debounce
+
 // Drawing Logic
-async function fetchDrawings() {
-    console.log('App: Fetching drawings...');
+async function fetchDrawings(bounds = null) {
+    console.log('App: Fetching drawings...', bounds ? 'with bounds' : 'global');
     isLoadingDrawings.value = true;
     loadError.value = null;
     
     // 1. Try Supabase Client
     try {
         const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Fetch Client Timeout')), 30000) // Increased to 30s for large datasets
+            setTimeout(() => reject(new Error('Fetch Client Timeout')), 30000)
         );
         
-        const fetchPromise = supabase
+        let query = supabase
             .from('drawings')
-            .select('*', { count: 'exact' })
+            .select('*', { count: 'exact' });
+
+        // Apply Spatial Filters if bounds exist
+        if (bounds) {
+            query = query
+                .gte('center_lat', bounds.minLat)
+                .lte('center_lat', bounds.maxLat)
+                .gte('center_lng', bounds.minLng)
+                .lte('center_lng', bounds.maxLng);
+        }
+
+        // Always order by newest first and limit
+        query = query
             .order('created_at', { ascending: false })
-            .limit(5000); // Get latest 5000 items (descending)
+            .limit(5000); 
             
-        const result = await Promise.race([fetchPromise, timeoutPromise]);
+        const result = await Promise.race([query, timeoutPromise]);
         const { data, error } = result;
         
         if (error) throw error;
@@ -288,26 +310,6 @@ async function fetchDrawings() {
         // Reverse to oldest-first for rendering
         drawings.value = data ? data.reverse() : [];
         isLoadingDrawings.value = false;
-        
-        // Center map on last drawing if available
-        // Only center if we don't have a saved view state or if it's the first load
-        // Actually, user requested to prioritize local saved state for initial load.
-        // But if we just fetched new data, maybe we should only jump if the user hasn't moved the map yet?
-        // For now, let's respect the user's request: "refresh page... quickly locate to last position".
-        // The MapCanvas component now handles initial load from localStorage.
-        // So we should REMOVE the auto-centering here to prevent the "jump" effect the user complained about.
-        /* 
-        if (data && data.length > 0 && mapCanvasRef.value) {
-            const lastDrawing = data[data.length - 1];
-            if (lastDrawing.points && lastDrawing.points.length > 0) {
-                const center = lastDrawing.points[0];
-                const zoom = lastDrawing.created_zoom || 15;
-                console.log('App: Centering map on last drawing:', center);
-                mapCanvasRef.value.setView(center, zoom);
-            }
-        }
-        */
-        
         return; // Success
     } catch (clientErr) {
         console.warn('App: Fetch Client failed, trying Raw Fetch fallback...', clientErr);
@@ -315,9 +317,8 @@ async function fetchDrawings() {
 
     // 2. Fallback: Raw Fetch
     try {
-        // Add a timeout for the raw fetch as well
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 30000);
 
         const envUrl = import.meta.env.VITE_SUPABASE_URL;
         const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
@@ -332,7 +333,14 @@ async function fetchDrawings() {
             headers['Authorization'] = `Bearer ${token}`;
         }
 
-        const res = await fetch(`${envUrl}/rest/v1/drawings?select=*&order=created_at.desc&limit=5000`, {
+        // Construct Query String
+        let queryString = 'select=*&order=created_at.desc&limit=5000';
+        if (bounds) {
+            queryString += `&center_lat=gte.${bounds.minLat}&center_lat=lte.${bounds.maxLat}`;
+            queryString += `&center_lng=gte.${bounds.minLng}&center_lng=lte.${bounds.maxLng}`;
+        }
+
+        const res = await fetch(`${envUrl}/rest/v1/drawings?${queryString}`, {
             method: 'GET',
             headers: headers,
             signal: controller.signal
@@ -346,29 +354,18 @@ async function fetchDrawings() {
         
         const data = await res.json();
         console.log('App: Fetched drawings (Raw Fetch):', data?.length);
-        // Reverse to oldest-first for rendering
         drawings.value = data ? data.reverse() : [];
         isLoadingDrawings.value = false;
-
-        // Center map on last drawing (Fallback path)
-        // Removed to prevent jumping, relying on MapCanvas localStorage restoration
-        /*
-        if (data && data.length > 0 && mapCanvasRef.value) {
-            const lastDrawing = data[data.length - 1];
-            if (lastDrawing.points && lastDrawing.points.length > 0) {
-                const center = lastDrawing.points[0];
-                const zoom = lastDrawing.created_zoom || 15;
-                mapCanvasRef.value.setView(center, zoom);
-            }
-        }
-        */
 
     } catch (fetchErr) {
         console.error('App: All fetch attempts failed', fetchErr);
         loadError.value = fetchErr.message || 'Failed to load drawings';
         isLoadingDrawings.value = false;
-        // Show error to user
-        alert('无法加载历史绘制内容，请检查网络连接或刷新页面重试。\n错误信息: ' + (fetchErr.message || 'Unknown error'));
+        // Only alert if it's not an abort error (which might happen on rapid moves)
+        if (fetchErr.name !== 'AbortError') {
+             // alert('无法加载历史绘制内容，请检查网络连接或刷新页面重试。\n错误信息: ' + (fetchErr.message || 'Unknown error'));
+             console.warn('Suppressing alert for fetch error to avoid spamming user during pan/zoom');
+        }
     }
 }
 
@@ -395,6 +392,28 @@ async function addDrawing(drawingData) {
     // Deep clone points
     const rawPoints = JSON.parse(JSON.stringify(drawingData.points));
 
+    // Calculate Center
+    let centerLat = 0;
+    let centerLng = 0;
+    
+    if (rawPoints.length > 0) {
+        let minLat = 90, maxLat = -90, minLng = 180, maxLng = -180;
+        
+        rawPoints.forEach(p => {
+            // Handle both array [lat, lng] and object {lat, lng} formats
+            const lat = Array.isArray(p) ? p[0] : p.lat;
+            const lng = Array.isArray(p) ? p[1] : p.lng;
+            
+            if (lat < minLat) minLat = lat;
+            if (lat > maxLat) maxLat = lat;
+            if (lng < minLng) minLng = lng;
+            if (lng > maxLng) maxLng = lng;
+        });
+        
+        centerLat = (minLat + maxLat) / 2;
+        centerLng = (minLng + maxLng) / 2;
+    }
+
     // Create Optimistic Drawing Object
     const tempId = 'temp-' + Date.now() + Math.random();
     const newDrawing = {
@@ -405,7 +424,9 @@ async function addDrawing(drawingData) {
         weight: drawingData.weight,
         points: rawPoints,
         text: drawingData.text,
-        created_zoom: drawingData.createdZoom
+        created_zoom: drawingData.createdZoom,
+        center_lat: centerLat,
+        center_lng: centerLng
     };
 
     // Optimistic UI: Add to local state immediately with syncing flag
@@ -545,8 +566,8 @@ onMounted(async () => {
     // 1. Initialize Session
     await refreshSession();
     
-    // 2. Fetch Data (Now that session might be ready)
-    await Promise.all([fetchDrawings(), fetchUserProfile()]);
+    // 2. Fetch User Profile (Data fetch is now triggered by MapCanvas viewport-change)
+    await fetchUserProfile();
     
     // 3. Subscribe to Realtime
     subscribeToDrawings();

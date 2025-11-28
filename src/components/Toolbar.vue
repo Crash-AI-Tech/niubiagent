@@ -1,100 +1,108 @@
 <template>
     <div class="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] flex flex-col gap-2 items-center">
         
-        <!-- Main Toolbar -->
-        <div class="p-3 bg-white/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/50 flex items-center gap-4">
-            
-            <!-- Tools (Left Side) -->
-            <div class="flex items-center gap-1 pr-4 border-r border-gray-300/50">
-                <button
-                v-for="(icon, tool) in tools"
-                :key="tool"
-                @click="handleToolClick(tool)"
-                class="w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-200"
-                :class="currentTool === tool ? 'bg-blue-600 text-white shadow-lg scale-105' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'"
-                :title="tool"
-                >
-                <svg xmlns="http://www.w3.org/2000/svg" :viewBox="icon.viewBox" fill="currentColor" class="w-6 h-6">
-                    <path :d="icon.path" />
-                </svg>
-                </button>
-
-                <div class="w-px h-6 bg-gray-300 mx-2"></div>
-
-                <button
-                    @click="handleUndo"
-                    class="w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-200 text-gray-500 hover:bg-amber-50 hover:text-amber-600"
-                    :class="{ 'opacity-50 cursor-not-allowed': !user }"
-                    title="Undo"
-                >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
-                        <path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
-                    </svg>
-                </button>
+        <!-- Main Toolbar Wrapper -->
+        <div class="relative">
+            <!-- Loading Spinner Border -->
+            <div v-if="isLoading" class="absolute -inset-[4px] rounded-2xl overflow-hidden z-0">
+                <div class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[300%] h-[300%] bg-[conic-gradient(from_90deg_at_50%_50%,transparent_0%,#2563eb_50%,transparent_100%)] animate-[spin_1s_linear_infinite]"></div>
             </div>
 
-            <!-- User Info, Opacity & Login/Logout (Right Side) -->
-            <div class="flex items-center gap-3 relative">
+            <!-- Main Toolbar -->
+            <div class="relative z-10 p-3 bg-white/90 backdrop-blur-xl rounded-2xl shadow-xl border border-white/50 flex items-center gap-4">
                 
-                <!-- Opacity Toggle -->
-                <button 
-                    @click="$emit('update:isTransparent', !isTransparent)"
-                    class="w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200 border"
-                    :class="isTransparent ? 'bg-blue-100 text-blue-600 border-blue-200' : 'bg-transparent border-transparent text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
-                    title="Toggle Art Opacity"
-                >
-                     <svg xmlns="http://www.w3.org/2000/svg" :viewBox="opacityIcon.viewBox" fill="currentColor" class="w-5 h-5">
-                        <path :d="opacityIcon.path" />
-                    </svg>
-                </button>
-
-                <div class="w-px h-6 bg-gray-300"></div>
-
-                <!-- Logged In State -->
-                <template v-if="user">
-                    <div class="relative">
-                        <button 
-                            @click="showDropdown = !showDropdown"
-                            class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm uppercase shadow-md border border-white/20 hover:ring-2 hover:ring-offset-2 hover:ring-indigo-500 transition-all"
-                            :title="displayName"
-                        >
-                            {{ avatarInitials }}
-                        </button>
-
-                        <!-- Dropdown Menu -->
-                        <div v-if="showDropdown" class="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-1 overflow-hidden animate-fade-in origin-top-right">
-                            <div class="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
-                                <p class="text-sm font-semibold text-gray-900 truncate">{{ displayName }}</p>
-                                <p class="text-xs text-gray-500 truncate">{{ user.email }}</p>
-                            </div>
-                            
-                            <button @click="openEditName" class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                                </svg>
-                                Edit Name
-                            </button>
-                            
-                            <button @click="handleLogout" class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
-                                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                                </svg>
-                                Logout
-                            </button>
-                        </div>
-                    </div>
-                </template>
-
-                <!-- Guest State -->
-                <template v-else>
-                    <div class="text-sm font-medium text-gray-500">Guest</div>
-                    <button 
-                        @click="$emit('request-login')" 
-                        class="px-3 py-1.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+                <!-- Tools (Left Side) -->
+                <div class="flex items-center gap-1 pr-4 border-r border-gray-300/50">
+                    <button
+                    v-for="(icon, tool) in tools"
+                    :key="tool"
+                    @click="handleToolClick(tool)"
+                    class="w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-200"
+                    :class="currentTool === tool ? 'bg-blue-600 text-white shadow-lg scale-105' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700'"
+                    :title="tool"
                     >
-                        Login
+                    <svg xmlns="http://www.w3.org/2000/svg" :viewBox="icon.viewBox" fill="currentColor" class="w-6 h-6">
+                        <path :d="icon.path" />
+                    </svg>
                     </button>
-                </template>
+
+                    <div class="w-px h-6 bg-gray-300 mx-2"></div>
+
+                    <button
+                        @click="handleUndo"
+                        class="w-10 h-10 flex items-center justify-center rounded-xl transition-all duration-200 text-gray-500 hover:bg-amber-50 hover:text-amber-600"
+                        :class="{ 'opacity-50 cursor-not-allowed': !user }"
+                        title="Undo"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M9 15L3 9m0 0l6-6M3 9h12a6 6 0 010 12h-3" />
+                        </svg>
+                    </button>
+                </div>
+
+                <!-- User Info, Opacity & Login/Logout (Right Side) -->
+                <div class="flex items-center gap-3 relative">
+                    
+                    <!-- Opacity Toggle -->
+                    <button 
+                        @click="$emit('update:isTransparent', !isTransparent)"
+                        class="w-9 h-9 flex items-center justify-center rounded-full transition-all duration-200 border"
+                        :class="isTransparent ? 'bg-blue-100 text-blue-600 border-blue-200' : 'bg-transparent border-transparent text-gray-400 hover:text-gray-600 hover:bg-gray-50'"
+                        title="Toggle Art Opacity"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" :viewBox="opacityIcon.viewBox" fill="currentColor" class="w-5 h-5">
+                            <path :d="opacityIcon.path" />
+                        </svg>
+                    </button>
+
+                    <div class="w-px h-6 bg-gray-300"></div>
+
+                    <!-- Logged In State -->
+                    <template v-if="user">
+                        <div class="relative">
+                            <button 
+                                @click="showDropdown = !showDropdown"
+                                class="w-9 h-9 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-white font-bold text-sm uppercase shadow-md border border-white/20 hover:ring-2 hover:ring-offset-2 hover:ring-indigo-500 transition-all"
+                                :title="displayName"
+                            >
+                                {{ avatarInitials }}
+                            </button>
+
+                            <!-- Dropdown Menu -->
+                            <div v-if="showDropdown" class="absolute right-0 mt-2 w-48 bg-white rounded-xl shadow-xl border border-gray-100 py-1 overflow-hidden animate-fade-in origin-top-right">
+                                <div class="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+                                    <p class="text-sm font-semibold text-gray-900 truncate">{{ displayName }}</p>
+                                    <p class="text-xs text-gray-500 truncate">{{ user.email }}</p>
+                                </div>
+                                
+                                <button @click="openEditName" class="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center gap-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                                    </svg>
+                                    Edit Name
+                                </button>
+                                
+                                <button @click="handleLogout" class="w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center gap-2">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                    </svg>
+                                    Logout
+                                </button>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Guest State -->
+                    <template v-else>
+                        <div class="text-sm font-medium text-gray-500">Guest</div>
+                        <button 
+                            @click="$emit('request-login')" 
+                            class="px-3 py-1.5 bg-blue-600 text-white text-sm font-semibold rounded-lg hover:bg-blue-700 shadow-sm transition-colors"
+                        >
+                            Login
+                        </button>
+                    </template>
+                </div>
             </div>
         </div>
 
@@ -167,7 +175,8 @@ const props = defineProps({
   currentTool: String,
   currentColor: String,
   brushSize: Number,
-  isTransparent: Boolean
+  isTransparent: Boolean,
+  isLoading: Boolean
 });
 
 const emit = defineEmits(['update:currentTool', 'update:currentColor', 'update:brushSize', 'update:isTransparent', 'undo', 'logout', 'request-login', 'profile-updated']);
