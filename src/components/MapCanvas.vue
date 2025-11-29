@@ -701,37 +701,13 @@ const updateMapInteraction = () => {
 };
 
 // ...existing code...
-// Helper: Solve quadratic equation to find intersection of line segment and circle
-// Returns array of t values [0..1] where intersection occurs
-const getSegmentCircleIntersections = (p1, p2, center, radius) => {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const A = dx * dx + dy * dy;
-    const B = 2 * (dx * (p1.x - center.x) + dy * (p1.y - center.y));
-    const C = (p1.x - center.x) ** 2 + (p1.y - center.y) ** 2 - radius * radius;
-
-    const det = B * B - 4 * A * C;
-    if (det < 0) return []; // No intersection
-
-    const t1 = (-B - Math.sqrt(det)) / (2 * A);
-    const t2 = (-B + Math.sqrt(det)) / (2 * A);
-
-    const intersections = [];
-    if (t1 >= 0 && t1 <= 1) intersections.push(t1);
-    if (t2 >= 0 && t2 <= 1) intersections.push(t2);
-
-    return intersections.sort((a, b) => a - b);
-};
-
 // Touch Event Handlers
 const checkEraserHit = (latlng) => {
     if (!mapInstance.value || !drawingLayerGroup.value) return;
     
     const eraserPoint = mapInstance.value.latLngToContainerPoint(latlng);
     const currentZoom = mapInstance.value.getZoom();
-    
-    // Eraser radius in pixels (Fixed size, approx equivalent to brush size 1.5)
-    const eraserRadius = getPhysicalDimension(30, currentZoom, MAX_ZOOM); 
+    const TOLERANCE = 10; // Pixel tolerance for "mouse head" interaction
 
     drawingLayerGroup.value.eachLayer((layer) => {
         const d = layer.options.drawingData;
@@ -741,14 +717,29 @@ const checkEraserHit = (latlng) => {
         const isOwner = d.user_id === props.user || d.author === props.user || (props.userEmail && d.author === props.userEmail);
         if (!isOwner) return;
 
-        // 1. Handle Markers/Dots (Simple Distance Check)
-        if (layer instanceof L.Marker || layer instanceof L.CircleMarker || layer instanceof L.Circle) {
-            const layerPoint = mapInstance.value.latLngToContainerPoint(layer.getLatLng());
-            if (layerPoint.distanceTo(eraserPoint) < eraserRadius) { 
-                emit('remove-drawing', d.id);
-            }
-        } 
-        // 2. Handle Polylines (Stroke-based Eraser)
+        // 1. Handle Markers (Icons)
+        if (layer instanceof L.Marker) {
+             const layerPoint = mapInstance.value.latLngToContainerPoint(layer.getLatLng());
+             const currentSize = getPhysicalDimension(MARKER_BASE_SIZE_MAX_ZOOM, currentZoom);
+             const hitRadius = (currentSize / 2) + TOLERANCE;
+             
+             if (layerPoint.distanceTo(eraserPoint) < hitRadius) {
+                 emit('remove-drawing', d.id);
+             }
+        }
+        // 2. Handle Dots (Circles/CircleMarkers)
+        else if (layer instanceof L.CircleMarker || layer instanceof L.Circle) {
+             const layerPoint = mapInstance.value.latLngToContainerPoint(layer.getLatLng());
+             // Use visual weight for radius
+             const baseWeight = d.weight || 1.0;
+             const currentWeight = getPhysicalDimension(baseWeight, currentZoom, MAX_ZOOM);
+             const radius = currentWeight / 2;
+             
+             if (layerPoint.distanceTo(eraserPoint) < (radius + TOLERANCE)) {
+                 emit('remove-drawing', d.id);
+             }
+        }
+        // 3. Handle Polylines (Stroke-based Eraser)
         else if (layer instanceof L.Polyline) {
             const latlngs = layer.getLatLngs();
             // Handle nested arrays (Leaflet can return [[lat,lng],...] for simple polylines)
@@ -756,25 +747,21 @@ const checkEraserHit = (latlng) => {
             
             if (points.length < 2) return;
 
-            // Convert all points to pixels for calculation
             const pixelPoints = points.map(p => mapInstance.value.latLngToContainerPoint(p));
             
-            let hit = false;
+            // Line weight (thickness)
+            const weight = layer.options.weight || 1;
+            const hitThreshold = (weight / 2) + TOLERANCE;
 
-            // 1. Check if any point is inside eraser
-            if (pixelPoints.some(p => p.distanceTo(eraserPoint) < eraserRadius)) {
-                hit = true;
-            } 
-            // 2. Check if any segment intersects eraser
-            else {
-                for (let i = 0; i < pixelPoints.length - 1; i++) {
-                    const p1 = pixelPoints[i];
-                    const p2 = pixelPoints[i+1];
-                    const ts = getSegmentCircleIntersections(p1, p2, eraserPoint, eraserRadius);
-                    if (ts.length > 0) {
-                        hit = true;
-                        break;
-                    }
+            let hit = false;
+            for (let i = 0; i < pixelPoints.length - 1; i++) {
+                const p1 = pixelPoints[i];
+                const p2 = pixelPoints[i+1];
+                // Use Leaflet's utility to calculate distance from point to segment
+                const dist = L.LineUtil.pointToSegmentDistance(eraserPoint, p1, p2);
+                if (dist <= hitThreshold) {
+                    hit = true;
+                    break;
                 }
             }
 
