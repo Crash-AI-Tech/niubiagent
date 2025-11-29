@@ -254,171 +254,42 @@ const setView = (center, zoom) => {
 defineExpose({ setView });
 
 // ...existing code...
+const renderedDrawingIds = new Set();
+
 const renderDrawings = () => {
     if (!drawingLayerGroup.value || !mapInstance.value) return;
     
-    drawingLayerGroup.value.clearLayers();
+    // OPTIMIZATION: Incremental Update instead of clearLayers()
+    // 1. Remove layers that are no longer in props.drawings
+    const currentDataIds = new Set(props.drawings.map(d => d.id));
+    const layersToRemove = [];
+    
+    drawingLayerGroup.value.eachLayer((layer) => {
+        const d = layer.options.drawingData;
+        if (d && !currentDataIds.has(d.id)) {
+            layersToRemove.push(layer);
+        }
+    });
+    
+    layersToRemove.forEach(layer => {
+        drawingLayerGroup.value.removeLayer(layer);
+        if (layer.options.drawingData) {
+            renderedDrawingIds.delete(layer.options.drawingData.id);
+        }
+    });
+
     const currentZoom = mapInstance.value.getZoom();
     const opacity = props.isTransparent ? 0.5 : 1.0;
 
+    // 2. Add new layers
     props.drawings.forEach(drawing => {
+        // Skip if already rendered
+        if (renderedDrawingIds.has(drawing.id)) {
+            return; 
+        }
+
         try {
-            const currentMarkerSize = getPhysicalDimension(MARKER_BASE_SIZE_MAX_ZOOM, currentZoom);
-            const verticalOffset = -currentMarkerSize / 5;
-            const isSyncing = drawing.isSyncing; // Check for syncing state
-
-            let layer;
-
-            if (drawing.tool === DrawingTool.MARKER) {
-                    const icon = createColoredMarkerIcon(drawing.color, currentMarkerSize);
-                    // Add glow class to icon if syncing
-                    if (isSyncing) {
-                        icon.options.className += ' syncing-glow-marker';
-                    }
-
-                    layer = L.marker(drawing.points[0], {
-                        icon: icon,
-                        drawingData: drawing
-                    });
-                    
-                    if (drawing.text) {
-                    const displayText = truncateText(drawing.text, 7);
-                    const tooltipContent = `<div class="tooltip-inner-content">${displayText}</div>`;
-                    layer.bindTooltip(tooltipContent, { 
-                        permanent: true, 
-                        direction: 'top', 
-                        offset: [0, verticalOffset],
-                        className: 'marker-tooltip-wrapper'
-                    });
-                    }
-
-                    let dateObj = new Date(drawing.created_at || drawing.id); // Use created_at if available
-                    if (isNaN(dateObj.getTime())) dateObj = new Date();
-                    const timeStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')} ${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
-                    
-                    const popupContent = `
-                    <div class="px-2 py-1 min-w-[80px] max-w-[180px]">
-                        <div class="font-bold text-[10px] text-gray-900 mb-0.5">${drawing.user_name || drawing.author || 'Unknown'}</div>
-                        <div class="text-[10px] font-medium text-gray-800 mb-0.5 whitespace-normal break-words leading-tight">${drawing.text || ''}</div>
-                        <div class="text-[9px] text-gray-400">${timeStr}</div>
-                        ${isSyncing ? '<div class="text-[9px] text-amber-500 font-bold mt-1">Saving...</div>' : ''}
-                    </div>
-                    `;
-
-                    const popupOptions = {
-                        closeButton: false,
-                        offset: [0, verticalOffset],
-                        className: 'custom-popup marker-popup-custom'
-                    };
-
-                    layer.options.customPopupContent = popupContent;
-                    layer.options.customPopupOptions = popupOptions;
-
-                    layer.bindPopup(popupContent, popupOptions);
-
-                    let closeTimer = null;
-                    
-                    // Click handler for mobile/tablet support and explicit interaction
-                    layer.on('click', function(e) {
-                        L.DomEvent.stopPropagation(e);
-                        if (closeTimer) {
-                            clearTimeout(closeTimer);
-                            closeTimer = null;
-                        }
-                        this.openPopup();
-                        
-                        // Add visual feedback
-                        requestAnimationFrame(() => {
-                            const popup = this.getPopup();
-                            if (popup) {
-                                const el = popup.getElement();
-                                if (el) el.classList.add('popup-visible');
-                            }
-                        });
-                    });
-
-                    layer.on('mouseover', function() {
-                    if (mapInstance.value.getZoom() < MAP_MAX_ZOOM) return;
-                    if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
-                    const tooltip = this.getTooltip();
-                    if (tooltip) {
-                        const el = tooltip.getElement();
-                        if (el) el.classList.add('hover-hidden');
-                    }
-                    this.openPopup();
-                    requestAnimationFrame(() => {
-                        const popup = this.getPopup();
-                        if (popup) {
-                            const el = popup.getElement();
-                            if (el) el.classList.add('popup-visible');
-                        }
-                    });
-                    });
-
-                    layer.on('mouseout', function() {
-                        const popup = this.getPopup();
-                        const tooltip = this.getTooltip();
-                        if (popup) {
-                            const el = popup.getElement();
-                            if (el) el.classList.remove('popup-visible');
-                        }
-                        closeTimer = setTimeout(() => {
-                            this.closePopup();
-                            if (tooltip) {
-                                const el = tooltip.getElement();
-                                if (el && mapInstance.value.getZoom() >= MAP_MAX_ZOOM) {
-                                    el.classList.remove('hover-hidden');
-                                }
-                            }
-                        }, 300); 
-                    });
-            } 
-            else if (drawing.tool === DrawingTool.BRUSH) {
-                // Calculate width at current zoom - Use MAX_ZOOM as unified reference
-                const currentWeight = getPhysicalDimension(drawing.weight || 1.0, currentZoom, MAX_ZOOM);
-                const pathOptions = { 
-                    color: drawing.color, 
-                    // Ensure consistent visual properties
-                    weight: Math.max(0.1, currentWeight),
-                    lineCap: 'round', 
-                    lineJoin: 'round',
-                    opacity: opacity, 
-                    fillOpacity: opacity,
-                    drawingData: drawing,
-                    className: isSyncing ? 'syncing-glow-path' : '' // Add glow class for paths
-                };
-
-                if (drawing.points.length === 1) {
-                    // Single point: Use L.Circle for smooth geographic scaling
-                    
-                    // FIX: Calculate meters directly at MAX_ZOOM to avoid low-zoom pixel clamping issues.
-                    // This ensures the physical size (meters) remains constant regardless of the zoom level at render time.
-                    const baseWeight = drawing.weight || 1.0;
-                    const lat = drawing.points[0].lat || drawing.points[0][0]; // Handle object or array format
-                    
-                    // Web Mercator resolution formula: meters/pixel = (EarthCircumference * cos(lat)) / (256 * 2^zoom)
-                    const earthCircumference = 40075016.686;
-                    const latRad = lat * (Math.PI / 180);
-                    const resolutionAtMaxZoom = (earthCircumference * Math.cos(latRad)) / (256 * Math.pow(2, MAX_ZOOM));
-                    
-                    // Radius (meters) = (Base Pixel Radius) * Resolution
-                    let radiusMeters = (baseWeight / 2) * resolutionAtMaxZoom;
-                    
-                    // Fallback purely for safety
-                    if (!radiusMeters || radiusMeters <= 0) {
-                        radiusMeters = 0.1; 
-                    }
-
-                    layer = L.circle(drawing.points[0], {
-                        ...pathOptions,
-                        stroke: false,
-                        radius: radiusMeters, 
-                    });
-                } else {
-                    // Multiple points: Polyline
-                    layer = L.polyline(drawing.points, pathOptions);
-                }
-            }
+            const layer = createLayerForDrawing(drawing, currentZoom, opacity);
 
             if (layer) {
                 const checkErase = (e) => {
@@ -435,7 +306,14 @@ const renderDrawings = () => {
                 };
                 layer.on('mousedown', checkErase);
                 layer.on('mouseover', checkErase);
+                
                 layer.addTo(drawingLayerGroup.value);
+                renderedDrawingIds.add(drawing.id);
+                
+                // Fix Z-Index: Bring new layers to front
+                if (layer.bringToFront) {
+                    layer.bringToFront();
+                }
             }
         } catch (err) {
             console.error('Error rendering drawing:', drawing.id, err);
@@ -445,6 +323,167 @@ const renderDrawings = () => {
     nextTick(() => {
         updateLayerStyles();
     });
+};
+
+// Helper function to create layer (refactored from renderDrawings)
+const createLayerForDrawing = (drawing, currentZoom, opacity) => {
+    const currentMarkerSize = getPhysicalDimension(MARKER_BASE_SIZE_MAX_ZOOM, currentZoom);
+    const verticalOffset = -currentMarkerSize / 5;
+    const isSyncing = drawing.isSyncing;
+
+    let layer;
+
+    if (drawing.tool === DrawingTool.MARKER) {
+            const icon = createColoredMarkerIcon(drawing.color, currentMarkerSize);
+            // Add glow class to icon if syncing
+            if (isSyncing) {
+                icon.options.className += ' syncing-glow-marker';
+            }
+
+            layer = L.marker(drawing.points[0], {
+                icon: icon,
+                drawingData: drawing
+            });
+            
+            if (drawing.text) {
+            const displayText = truncateText(drawing.text, 7);
+            const tooltipContent = `<div class="tooltip-inner-content">${displayText}</div>`;
+            layer.bindTooltip(tooltipContent, { 
+                permanent: true, 
+                direction: 'top', 
+                offset: [0, verticalOffset],
+                className: 'marker-tooltip-wrapper'
+            });
+            }
+
+            let dateObj = new Date(drawing.created_at || drawing.id); // Use created_at if available
+            if (isNaN(dateObj.getTime())) dateObj = new Date();
+            const timeStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(dateObj.getDate()).padStart(2, '0')} ${String(dateObj.getHours()).padStart(2, '0')}:${String(dateObj.getMinutes()).padStart(2, '0')}`;
+            
+            const popupContent = `
+            <div class="px-2 py-1 min-w-[80px] max-w-[180px]">
+                <div class="font-bold text-[10px] text-gray-900 mb-0.5">${drawing.user_name || drawing.author || 'Unknown'}</div>
+                <div class="text-[10px] font-medium text-gray-800 mb-0.5 whitespace-normal break-words leading-tight">${drawing.text || ''}</div>
+                <div class="text-[9px] text-gray-400">${timeStr}</div>
+                ${isSyncing ? '<div class="text-[9px] text-amber-500 font-bold mt-1">Saving...</div>' : ''}
+            </div>
+            `;
+
+            const popupOptions = {
+                closeButton: false,
+                offset: [0, verticalOffset],
+                className: 'custom-popup marker-popup-custom'
+            };
+
+            layer.options.customPopupContent = popupContent;
+            layer.options.customPopupOptions = popupOptions;
+
+            layer.bindPopup(popupContent, popupOptions);
+
+            let closeTimer = null;
+            
+            // Click handler for mobile/tablet support and explicit interaction
+            layer.on('click', function(e) {
+                L.DomEvent.stopPropagation(e);
+                if (closeTimer) {
+                    clearTimeout(closeTimer);
+                    closeTimer = null;
+                }
+                this.openPopup();
+                
+                // Add visual feedback
+                requestAnimationFrame(() => {
+                    const popup = this.getPopup();
+                    if (popup) {
+                        const el = popup.getElement();
+                        if (el) el.classList.add('popup-visible');
+                    }
+                });
+            });
+
+            layer.on('mouseover', function() {
+            if (mapInstance.value.getZoom() < MAP_MAX_ZOOM) return;
+            if (closeTimer) { clearTimeout(closeTimer); closeTimer = null; }
+            const tooltip = this.getTooltip();
+            if (tooltip) {
+                const el = tooltip.getElement();
+                if (el) el.classList.add('hover-hidden');
+            }
+            this.openPopup();
+            requestAnimationFrame(() => {
+                const popup = this.getPopup();
+                if (popup) {
+                    const el = popup.getElement();
+                    if (el) el.classList.add('popup-visible');
+                }
+            });
+            });
+
+            layer.on('mouseout', function() {
+                const popup = this.getPopup();
+                const tooltip = this.getTooltip();
+                if (popup) {
+                    const el = popup.getElement();
+                    if (el) el.classList.remove('popup-visible');
+                }
+                closeTimer = setTimeout(() => {
+                    this.closePopup();
+                    if (tooltip) {
+                        const el = tooltip.getElement();
+                        if (el && mapInstance.value.getZoom() >= MAP_MAX_ZOOM) {
+                            el.classList.remove('hover-hidden');
+                        }
+                    }
+                }, 300); 
+            });
+    } 
+    else if (drawing.tool === DrawingTool.BRUSH) {
+        // Calculate width at current zoom - Use MAX_ZOOM as unified reference
+        const currentWeight = getPhysicalDimension(drawing.weight || 1.0, currentZoom, MAX_ZOOM);
+        const pathOptions = { 
+            color: drawing.color, 
+            // Ensure consistent visual properties
+            weight: Math.max(0.1, currentWeight),
+            lineCap: 'round', 
+            lineJoin: 'round',
+            opacity: opacity, 
+            fillOpacity: opacity,
+            drawingData: drawing,
+            className: isSyncing ? 'syncing-glow-path' : '' // Add glow class for paths
+        };
+
+        if (drawing.points.length === 1) {
+            // Single point: Use L.Circle for smooth geographic scaling
+            
+            // FIX: Calculate meters directly at MAX_ZOOM to avoid low-zoom pixel clamping issues.
+            // This ensures the physical size (meters) remains constant regardless of the zoom level at render time.
+            const baseWeight = drawing.weight || 1.0;
+            const lat = drawing.points[0].lat || drawing.points[0][0]; // Handle object or array format
+            
+            // Web Mercator resolution formula: meters/pixel = (EarthCircumference * cos(lat)) / (256 * 2^zoom)
+            const earthCircumference = 40075016.686;
+            const latRad = lat * (Math.PI / 180);
+            const resolutionAtMaxZoom = (earthCircumference * Math.cos(latRad)) / (256 * Math.pow(2, MAX_ZOOM));
+            
+            // Radius (meters) = (Base Pixel Radius) * Resolution
+            let radiusMeters = (baseWeight / 2) * resolutionAtMaxZoom;
+            
+            // Fallback purely for safety
+            if (!radiusMeters || radiusMeters <= 0) {
+                radiusMeters = 0.1; 
+            }
+
+            layer = L.circle(drawing.points[0], {
+                ...pathOptions,
+                stroke: false,
+                radius: radiusMeters, 
+            });
+        } else {
+            // Multiple points: Polyline
+            layer = L.polyline(drawing.points, pathOptions);
+        }
+    }
+    return layer;
 };
 
 const renderTempDrawing = () => {
@@ -492,6 +531,11 @@ const renderTempDrawing = () => {
             tempLayer.value = L.polyline(currentPoints.value, pathOptions).addTo(mapInstance.value);
         }
     }
+    
+    // Fix Z-Index: Ensure temp layer is always on top
+    if (tempLayer.value && tempLayer.value.bringToFront) {
+        tempLayer.value.bringToFront();
+    }
 };
 
 
@@ -530,115 +574,95 @@ const confirmMarker = () => {
     cancelMarker();
 };
 
-const handleMouseDown = (e) => {
-    if (e.originalEvent.button === 1) {
-        isPanning.value = true;
-        lastPanPos.value = { x: e.originalEvent.clientX, y: e.originalEvent.clientY };
-        mapInstance.value.getContainer().style.cursor = 'grabbing';
-        L.DomEvent.stopPropagation(e);
-        e.originalEvent.preventDefault();
-        return;
-    }
-    if (e.originalEvent.button === 2) return;
+// Pointer Event Handlers (Unified for Mouse/Touch/Pen)
+const handlePointerDown = (e) => {
+    if (props.tool === DrawingTool.HAND) return; // Let Leaflet handle panning
+    
+    // Allow multi-touch gestures to pass through if not drawing
+    if (!e.isPrimary) return;
 
-    if (props.tool === DrawingTool.HAND) return;
+    // For mouse, only allow left click
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-    L.DomEvent.stopPropagation(e);
-    L.DomEvent.preventDefault(e);
+    // Prevent default to stop scrolling/zooming while drawing
+    // Note: touch-action: none in CSS handles most of this, but preventDefault is safe
+    // e.preventDefault(); 
+    // WARNING: preventDefault() on pointerdown might block focus or other behaviors. 
+    // Rely on touch-action: none for scrolling.
+    
+    e.stopPropagation(); // Stop Leaflet from panning
 
-    if (props.tool === DrawingTool.ERASER) {
-        isErasing.value = true;
-    } 
-    else if (props.tool === DrawingTool.BRUSH) {
+    const container = mapInstance.value.getContainer();
+    container.setPointerCapture(e.pointerId);
+
+    const rect = container.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const latlng = mapInstance.value.containerPointToLatLng([x, y]);
+
+    if (props.tool === DrawingTool.BRUSH) {
         isDrawingActive.value = true;
-        const newPoint = [e.latlng.lat, e.latlng.lng];
-        currentPoints.value = [newPoint];
+        currentPoints.value = [[latlng.lat, latlng.lng]];
         renderTempDrawing();
-    } 
-    else if (props.tool === DrawingTool.MARKER) {
+    } else if (props.tool === DrawingTool.ERASER) {
+        isErasing.value = true;
+        checkEraserHit(latlng);
+    } else if (props.tool === DrawingTool.MARKER) {
+        // Marker logic is usually on 'click' (up), but we can track down position
+        pendingMarkerPos.value = [latlng.lat, latlng.lng];
     }
 };
 
-const handleMouseMove = (e) => {
-    if (isPanning.value) {
-        if ((e.originalEvent.buttons & 4) === 0) {
-            isPanning.value = false;
-            lastPanPos.value = null;
-            updateMapInteraction();
-            return;
-        }
-        if (lastPanPos.value && mapInstance.value) {
-            const x = e.originalEvent.clientX;
-            const y = e.originalEvent.clientY;
-            const deltaX = lastPanPos.value.x - x;
-            const deltaY = lastPanPos.value.y - y;
-            mapInstance.value.panBy([deltaX, deltaY], { animate: false });
-            lastPanPos.value = { x, y };
-        }
-        return;
-    }
+const handlePointerMove = (e) => {
+    if (props.tool === DrawingTool.HAND) return;
+    if (!isDrawingActive.value && !isErasing.value) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Use getCoalescedEvents to capture high-frequency input (fast movement)
+    const events = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+    const container = mapInstance.value.getContainer();
+    const rect = container.getBoundingClientRect();
 
     if (isDrawingActive.value && props.tool === DrawingTool.BRUSH) {
-        if ((e.originalEvent.buttons & 1) === 0) {
-            isDrawingActive.value = false;
-            finishDrawing();
-            return;
-        }
-        const newPoint = [e.latlng.lat, e.latlng.lng];
-        currentPoints.value.push(newPoint);
-        
+        events.forEach(evt => {
+            const x = evt.clientX - rect.left;
+            const y = evt.clientY - rect.top;
+            const latlng = mapInstance.value.containerPointToLatLng([x, y]);
+            currentPoints.value.push([latlng.lat, latlng.lng]);
+        });
+
         if (tempLayer.value && mapInstance.value) {
-            // Check explicit types for optimized updates
-            if (tempLayer.value instanceof L.Polyline && !(tempLayer.value instanceof L.CircleMarker)) {
-                    try {
+            if (tempLayer.value instanceof L.Polyline && !(tempLayer.value instanceof L.CircleMarker) && !(tempLayer.value instanceof L.Circle)) {
+                try {
                     tempLayer.value.setLatLngs(currentPoints.value);
-                    } catch (err) {
+                } catch (err) {
                     renderTempDrawing();
-                    }
+                }
             } else {
                 renderTempDrawing();
             }
         }
+    } else if (isErasing.value && props.tool === DrawingTool.ERASER) {
+        // Eraser doesn't need coalesced events as much, but good to have
+        events.forEach(evt => {
+            const x = evt.clientX - rect.left;
+            const y = evt.clientY - rect.top;
+            const latlng = mapInstance.value.containerPointToLatLng([x, y]);
+            checkEraserHit(latlng);
+        });
     }
 };
 
-const handleMouseUp = (e) => {
-    if (e.originalEvent.button === 1) {
-        isPanning.value = false;
-        lastPanPos.value = null;
-        updateMapInteraction(); 
-        return;
-    }
+const handlePointerUp = (e) => {
     if (props.tool === DrawingTool.HAND) return;
 
-    if (props.tool === DrawingTool.ERASER) {
-        isErasing.value = false;
-    } 
-    else if (props.tool === DrawingTool.BRUSH) {
-        if (isDrawingActive.value) {
-            isDrawingActive.value = false;
-            finishDrawing();
-        }
-    } 
-    else if (props.tool === DrawingTool.MARKER) {
-        if (e.originalEvent.button === 0) {
-            const newPoint = [e.latlng.lat, e.latlng.lng];
-            pendingMarkerPos.value = newPoint;
-            markerText.value = ''; 
-            showMarkerInput.value = true;
-            nextTick(() => {
-                if (markerInputRef.value) markerInputRef.value.focus();
-            });
-        }
+    const container = mapInstance.value.getContainer();
+    if (container.hasPointerCapture(e.pointerId)) {
+        container.releasePointerCapture(e.pointerId);
     }
-};
 
-const handleGlobalMouseUp = () => {
-    if (isPanning.value) {
-        isPanning.value = false;
-        lastPanPos.value = null;
-        updateMapInteraction();
-    }
     if (isDrawingActive.value) {
         isDrawingActive.value = false;
         finishDrawing();
@@ -646,15 +670,14 @@ const handleGlobalMouseUp = () => {
     if (isErasing.value) {
         isErasing.value = false;
     }
-};
-
-const handleGlobalTouchEnd = () => {
-    if (isDrawingActive.value) {
-        isDrawingActive.value = false;
-        finishDrawing();
-    }
-    if (isErasing.value) {
-        isErasing.value = false;
+    
+    if (props.tool === DrawingTool.MARKER && pendingMarkerPos.value) {
+        // Confirm marker on up
+        markerText.value = ''; 
+        showMarkerInput.value = true;
+        nextTick(() => {
+            if (markerInputRef.value) markerInputRef.value.focus();
+        });
     }
 };
 
@@ -762,159 +785,8 @@ const checkEraserHit = (latlng) => {
     });
 };
 
-const handleTouchStart = (e) => {
-    // Allow multi-touch (zoom/pan) if not drawing
-    if (e.touches.length > 1) {
-        if (touchStartTimer.value) {
-            clearTimeout(touchStartTimer.value);
-            touchStartTimer.value = null;
-        }
-        // If drawing already started (rare), cancel it
-        if (isDrawingActive.value) {
-            isDrawingActive.value = false;
-            currentPoints.value = [];
-            renderTempDrawing();
-        }
-        return;
-    }
-    
-    if (props.tool === DrawingTool.HAND) return;
+// Removed old Touch Handlers (handleTouchStart, handleTouchMove, handleTouchEnd) as they are replaced by Pointer Events
 
-    // Prevent default to stop scrolling/zooming while drawing
-    if (e.cancelable) {
-        e.preventDefault();
-    }
-    e.stopPropagation();
-
-    const touch = e.touches[0];
-    const container = mapInstance.value.getContainer();
-    const rect = container.getBoundingClientRect();
-    const x = touch.clientX - rect.left;
-    const y = touch.clientY - rect.top;
-    const latlng = mapInstance.value.containerPointToLatLng([x, y]);
-
-    lastTouchLatLng.value = latlng;
-
-    // Check if input is from a stylus (Apple Pencil)
-    // Stylus input doesn't need delay as it won't trigger pinch-to-zoom
-    const isStylus = touch.touchType === 'stylus';
-
-    if (isStylus) {
-        if (props.tool === DrawingTool.BRUSH) {
-            isDrawingActive.value = true;
-            const newPoint = [latlng.lat, latlng.lng];
-            currentPoints.value = [newPoint];
-            renderTempDrawing();
-        } else if (props.tool === DrawingTool.ERASER) {
-            isErasing.value = true;
-            checkEraserHit(latlng);
-        }
-    } else {
-        // Delay drawing start by 50ms to detect multi-touch gestures (pinch-to-zoom) for fingers
-        touchStartTimer.value = setTimeout(() => {
-            if (props.tool === DrawingTool.BRUSH) {
-                isDrawingActive.value = true;
-                const newPoint = [latlng.lat, latlng.lng];
-                currentPoints.value = [newPoint];
-                renderTempDrawing();
-            } else if (props.tool === DrawingTool.ERASER) {
-                isErasing.value = true;
-                checkEraserHit(latlng);
-            }
-            touchStartTimer.value = null;
-        }, 50);
-    }
-};
-
-const handleTouchMove = (e) => {
-    if (e.touches.length > 1) {
-        if (touchStartTimer.value) {
-            clearTimeout(touchStartTimer.value);
-            touchStartTimer.value = null;
-        }
-        if (isDrawingActive.value) {
-            isDrawingActive.value = false;
-            currentPoints.value = [];
-            renderTempDrawing();
-        }
-        return;
-    }
-    
-    if (props.tool === DrawingTool.HAND) return;
-
-    if (e.cancelable) {
-        e.preventDefault();
-    }
-    e.stopPropagation();
-
-    // If timer exists (drawing hasn't started yet), start immediately for responsiveness
-    if (touchStartTimer.value) {
-        clearTimeout(touchStartTimer.value);
-        touchStartTimer.value = null;
-        
-        if (props.tool === DrawingTool.BRUSH && !isDrawingActive.value) {
-             isDrawingActive.value = true;
-             if (lastTouchLatLng.value) {
-                 currentPoints.value = [[lastTouchLatLng.value.lat, lastTouchLatLng.value.lng]];
-             }
-        } else if (props.tool === DrawingTool.ERASER) {
-            isErasing.value = true;
-        }
-    }
-
-    const touch = e.touches[0];
-    const container = mapInstance.value.getContainer();
-    const rect = container.getBoundingClientRect();
-    const x = touch.clientX - rect.left;
-    const y = touch.clientY - rect.top;
-    const latlng = mapInstance.value.containerPointToLatLng([x, y]);
-
-    lastTouchLatLng.value = latlng;
-
-    if (isDrawingActive.value && props.tool === DrawingTool.BRUSH) {
-        const newPoint = [latlng.lat, latlng.lng];
-        currentPoints.value.push(newPoint);
-        
-        if (tempLayer.value && mapInstance.value) {
-            // Check explicit types for optimized updates
-            if (tempLayer.value instanceof L.Polyline && !(tempLayer.value instanceof L.CircleMarker) && !(tempLayer.value instanceof L.Circle)) {
-                    try {
-                    tempLayer.value.setLatLngs(currentPoints.value);
-                    } catch (err) {
-                    renderTempDrawing();
-                    }
-            } else {
-                renderTempDrawing();
-            }
-        }
-    } else if (isErasing.value && props.tool === DrawingTool.ERASER) {
-        checkEraserHit(latlng);
-    }
-};
-
-const handleTouchEnd = (e) => {
-    if (props.tool === DrawingTool.HAND) return;
-
-    if (isDrawingActive.value) {
-        isDrawingActive.value = false;
-        finishDrawing();
-    }
-    if (isErasing.value) {
-        isErasing.value = false;
-    }
-    
-    if (props.tool === DrawingTool.MARKER && lastTouchLatLng.value) {
-        // Use the last known touch position for marker placement
-        const newPoint = [lastTouchLatLng.value.lat, lastTouchLatLng.value.lng];
-        pendingMarkerPos.value = newPoint;
-        markerText.value = ''; 
-        showMarkerInput.value = true;
-        nextTick(() => {
-            if (markerInputRef.value) markerInputRef.value.focus();
-        });
-        lastTouchLatLng.value = null;
-    }
-};
 
 onMounted(() => {
     // ...existing code...
@@ -958,16 +830,6 @@ onMounted(() => {
 
     drawingLayerGroup.value = markRaw(L.layerGroup().addTo(map));
     
-    map.on('mousedown', handleMouseDown);
-    map.on('mousemove', handleMouseMove);
-    map.on('mouseup', handleMouseUp);
-    
-    // Add Native Touch Listeners to Container for better control
-    const container = map.getContainer();
-    container.addEventListener('touchstart', handleTouchStart, { passive: false });
-    container.addEventListener('touchmove', handleTouchMove, { passive: false });
-    container.addEventListener('touchend', handleTouchEnd, { passive: false });
-
     // Optimization: Update styles only on zoomend to allow "auto-stretch" behavior during animation
     // and prevent heavy re-calculations on every frame.
     map.on('zoomend', updateLayerStyles);
@@ -992,8 +854,13 @@ onMounted(() => {
         });
     });
     
-    window.addEventListener('mouseup', handleGlobalMouseUp);
-    window.addEventListener('touchend', handleGlobalTouchEnd);
+    // Use Pointer Events for unified and high-frequency input handling (Fixes fast movement issue)
+    const container = map.getContainer();
+    container.addEventListener('pointerdown', handlePointerDown);
+    container.addEventListener('pointermove', handlePointerMove);
+    container.addEventListener('pointerup', handlePointerUp);
+    container.addEventListener('pointercancel', handlePointerUp);
+    container.addEventListener('pointerleave', handlePointerUp);
 
     renderDrawings();
     updateMapInteraction();
@@ -1018,21 +885,17 @@ onMounted(() => {
 
 onUnmounted(() => {
     if (mapInstance.value) {
-        mapInstance.value.off('mousedown', handleMouseDown);
-        mapInstance.value.off('mousemove', handleMouseMove);
-        mapInstance.value.off('mouseup', handleMouseUp);
-        
-        // Remove Native Touch Listeners
+        // Remove Pointer Listeners
         const container = mapInstance.value.getContainer();
-        container.removeEventListener('touchstart', handleTouchStart);
-        container.removeEventListener('touchmove', handleTouchMove);
-        container.removeEventListener('touchend', handleTouchEnd);
+        container.removeEventListener('pointerdown', handlePointerDown);
+        container.removeEventListener('pointermove', handlePointerMove);
+        container.removeEventListener('pointerup', handlePointerUp);
+        container.removeEventListener('pointercancel', handlePointerUp);
+        container.removeEventListener('pointerleave', handlePointerUp);
 
         mapInstance.value.remove();
         mapInstance.value = null;
     }
-    window.removeEventListener('mouseup', handleGlobalMouseUp);
-    window.removeEventListener('touchend', handleGlobalTouchEnd);
 });
 
 

@@ -83,6 +83,105 @@ const isUndoing = ref(false);
 const currentBounds = ref(null);
 const loadedBounds = ref(null);
 
+// Batch Saving Logic
+const saveQueue = ref([]);
+const isSaving = ref(false);
+let saveTimer = null;
+
+// Batch Deleting Logic
+const deleteQueue = ref(new Set());
+const isDeleting = ref(false);
+let deleteTimer = null;
+
+function generateUUID() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+const processSaveQueue = async () => {
+    if (saveQueue.value.length === 0 || isSaving.value) return;
+    
+    isSaving.value = true;
+    const batch = [...saveQueue.value];
+    saveQueue.value = []; // Clear queue immediately to allow new adds
+    
+    console.log(`App: Processing batch save for ${batch.length} items...`);
+
+    try {
+        // Use Supabase bulk insert
+        const { data, error } = await supabase
+            .from('drawings')
+            .insert(batch)
+            .select();
+
+        if (error) throw error;
+        
+        console.log(`App: Batch saved successfully.`);
+        
+        // Update syncing status in local state
+        batch.forEach(d => {
+             const index = drawings.value.findIndex(local => local.id === d.id);
+             if (index !== -1) {
+                 drawings.value[index].isSyncing = false;
+             }
+        });
+
+    } catch (err) {
+        console.error('App: Batch save failed:', err);
+        // Strategy: Put them back in queue to retry? 
+        // Or just alert. For now, let's re-queue them at the front to preserve order if possible,
+        // but since we cleared queue, we can just unshift.
+        saveQueue.value = [...batch, ...saveQueue.value];
+        
+        // If it's a network error, maybe wait longer
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(processSaveQueue, 5000); 
+    } finally {
+        isSaving.value = false;
+        // If more items arrived while saving, process them after a short delay
+        if (saveQueue.value.length > 0 && !saveTimer) {
+            saveTimer = setTimeout(processSaveQueue, 1000);
+        }
+    }
+};
+
+const processDeleteQueue = async () => {
+    if (deleteQueue.value.size === 0 || isDeleting.value) return;
+    
+    isDeleting.value = true;
+    const batchIds = Array.from(deleteQueue.value);
+    deleteQueue.value.clear();
+    
+    console.log(`App: Processing batch delete for ${batchIds.length} items...`);
+
+    try {
+        const { error } = await supabase
+            .from('drawings')
+            .delete()
+            .in('id', batchIds)
+            .eq('user_id', userId.value);
+
+        if (error) throw error;
+        console.log(`App: Batch delete successful.`);
+    } catch (err) {
+        console.error('App: Batch delete failed:', err);
+        // Re-queue
+        batchIds.forEach(id => deleteQueue.value.add(id));
+        if (deleteTimer) clearTimeout(deleteTimer);
+        deleteTimer = setTimeout(processDeleteQueue, 5000);
+    } finally {
+        isDeleting.value = false;
+        if (deleteQueue.value.size > 0 && !deleteTimer) {
+            deleteTimer = setTimeout(processDeleteQueue, 1000);
+        }
+    }
+};
+
 const userEmail = computed(() => session.value?.user?.email);
 const user = computed(() => session.value?.user);
 const userId = computed(() => session.value?.user?.id);
@@ -563,9 +662,11 @@ async function addDrawing(drawingData) {
     }
 
     // Create Optimistic Drawing Object
-    const tempId = drawingData.id || ('temp-' + Date.now() + Math.random());
+    // Use Client-Side UUID to avoid ID swapping and re-renders
+    const newId = drawingData.id || generateUUID();
+    
     const newDrawing = {
-        id: drawingData.id,
+        id: newId,
         user_id: userId.value,
         user_name: userProfile.value?.user_name || user.value?.user_metadata?.user_name || 'Unknown',
         tool: drawingData.tool,
@@ -576,140 +677,43 @@ async function addDrawing(drawingData) {
         created_zoom: drawingData.createdZoom || drawingData.created_zoom,
         center_lat: centerLat,
         center_lng: centerLng,
-        created_at: drawingData.created_at // Preserve original timestamp if available
+        created_at: drawingData.created_at || new Date().toISOString()
     };
 
     // Optimistic UI: Add to local state immediately with syncing flag
-    const optimisticDrawing = { ...newDrawing, id: tempId, isSyncing: true };
+    const optimisticDrawing = { ...newDrawing, isSyncing: true };
     
     // Insert into correct position based on created_at to maintain z-index
-    if (newDrawing.created_at) {
-        const insertTime = new Date(newDrawing.created_at).getTime();
-        // Find the first drawing that is NEWER than this one (we want to insert BEFORE it)
-        // Assuming drawings are sorted oldest -> newest (bottom -> top)
-        // Wait, fetchDrawings sorts by created_at DESC (newest first) but then reverses to push?
-        // Let's check fetchDrawings: "drawings.value.push(...newDrawings.reverse());"
-        // So drawings.value is sorted OLDEST -> NEWEST (index 0 is oldest, rendered first/bottom).
-        
-        let insertIndex = drawings.value.length;
-        for (let i = 0; i < drawings.value.length; i++) {
-            const dTime = new Date(drawings.value[i].created_at || 0).getTime();
-            if (dTime > insertTime) {
-                insertIndex = i;
-                break;
-            }
+    // Note: drawings.value is sorted OLDEST -> NEWEST (index 0 is oldest/bottom)
+    let insertIndex = drawings.value.length;
+    const insertTime = new Date(newDrawing.created_at).getTime();
+    
+    for (let i = 0; i < drawings.value.length; i++) {
+        const dTime = new Date(drawings.value[i].created_at || 0).getTime();
+        if (dTime > insertTime) {
+            insertIndex = i;
+            break;
         }
-        drawings.value.splice(insertIndex, 0, optimisticDrawing);
-    } else {
-        // New drawing (no created_at yet), push to end (top)
-        drawings.value.push(optimisticDrawing);
+    }
+    drawings.value.splice(insertIndex, 0, optimisticDrawing);
+
+    // FIX: Add to history immediately for Undo to work without waiting for DB
+    if (!isUndoing.value) {
+        actionHistory.value.push({ type: 'ADD', id: newDrawing.id });
     }
 
-    console.log('App: Saving drawing payload (Optimistic):', newDrawing);
+    console.log('App: Queuing drawing for save:', newDrawing.id);
 
-    try {
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Client Request timed out (5s)')), 5000)
-        );
-
-        const insertPromise = supabase
-            .from('drawings')
-            .insert(newDrawing)
-            .select()
-            .single();
-
-        const result = await Promise.race([insertPromise, timeoutPromise]);
-        const { data, error } = result;
-
-        if (error) throw error;
-        
-        if (data) {
-            console.log('App: Drawing saved successfully (Client):', data);
-            
-            if (!isUndoing.value) {
-                actionHistory.value.push({ type: 'ADD', id: data.id });
-            }
-
-            // Replace optimistic drawing with real one
-            const index = drawings.value.findIndex(d => d.id === tempId);
-            if (index !== -1) {
-                drawings.value.splice(index, 1, data);
-            } else {
-                // If not found (maybe cleared?), insert correctly
-                if (!drawings.value.find(d => d.id === data.id)) {
-                    // Re-calculate insert position for safety
-                    let insertIndex = drawings.value.length;
-                    const insertTime = new Date(data.created_at).getTime();
-                    for (let i = 0; i < drawings.value.length; i++) {
-                        const dTime = new Date(drawings.value[i].created_at || 0).getTime();
-                        if (dTime > insertTime) {
-                            insertIndex = i;
-                            break;
-                        }
-                    }
-                    drawings.value.splice(insertIndex, 0, data);
-                }
-            }
-            return; // Success
-        }
-    } catch (clientErr) {
-        console.warn('App: Supabase Client failed, trying raw REST API fallback...', clientErr);
-        
-        // Fallback: Raw Fetch
-        try {
-            const rawResponse = await fetch(`${envUrl}/rest/v1/drawings`, {
-                method: 'POST',
-                headers: {
-                    'apikey': envKey,
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json',
-                    'Prefer': 'return=representation'
-                },
-                body: JSON.stringify(newDrawing)
-            });
-
-            if (!rawResponse.ok) {
-                const errorText = await rawResponse.text();
-                throw new Error(`HTTP ${rawResponse.status}: ${errorText}`);
-            }
-
-            const rawData = await rawResponse.json();
-            console.log('App: Drawing saved successfully (Raw Fetch):', rawData);
-            
-            const savedItem = Array.isArray(rawData) ? rawData[0] : rawData;
-            
-            if (!isUndoing.value) {
-                actionHistory.value.push({ type: 'ADD', id: savedItem.id });
-            }
-
-            // Replace optimistic drawing with real one
-            const index = drawings.value.findIndex(d => d.id === tempId);
-            if (index !== -1) {
-                drawings.value.splice(index, 1, savedItem);
-            } else {
-                if (!drawings.value.find(d => d.id === savedItem.id)) {
-                     // Re-calculate insert position for safety
-                    let insertIndex = drawings.value.length;
-                    const insertTime = new Date(savedItem.created_at).getTime();
-                    for (let i = 0; i < drawings.value.length; i++) {
-                        const dTime = new Date(drawings.value[i].created_at || 0).getTime();
-                        if (dTime > insertTime) {
-                            insertIndex = i;
-                            break;
-                        }
-                    }
-                    drawings.value.splice(insertIndex, 0, savedItem);
-                }
-            }
-        } catch (fetchErr) {
-            console.error('App: All save attempts failed.', fetchErr);
-            alert('保存彻底失败: ' + fetchErr.message);
-            // Rollback optimistic update
-            const index = drawings.value.findIndex(d => d.id === tempId);
-            if (index !== -1) {
-                drawings.value.splice(index, 1);
-            }
-        }
+    // Queue for Batch Save
+    saveQueue.value.push(newDrawing);
+    
+    // Debounce save: Wait 1s, or save immediately if queue > 10
+    if (saveTimer) clearTimeout(saveTimer);
+    
+    if (saveQueue.value.length >= 10) {
+        processSaveQueue();
+    } else {
+        saveTimer = setTimeout(processSaveQueue, 1000);
     }
 }
 
@@ -733,11 +737,14 @@ async function removeDrawing(id) {
         drawings.value.splice(index, 1);
     }
 
-    const { error } = await supabase.from('drawings').delete().eq('id', id).eq('user_id', userId.value);
-    if (error) {
-        console.error('Error removing drawing:', error);
-        // Revert if needed, but for delete usually we just accept it might fail silently or refresh
-        fetchDrawings(); 
+    // Queue for Batch Delete
+    deleteQueue.value.add(id);
+    
+    if (deleteTimer) clearTimeout(deleteTimer);
+    if (deleteQueue.value.size >= 10) {
+        processDeleteQueue();
+    } else {
+        deleteTimer = setTimeout(processDeleteQueue, 1000);
     }
 }
 
@@ -891,6 +898,16 @@ onMounted(async () => {
 onBeforeUnmount(() => {
     if (realtimeChannel) {
         supabase.removeChannel(realtimeChannel);
+    }
+    // Flush pending saves
+    if (saveTimer) clearTimeout(saveTimer);
+    if (saveQueue.value.length > 0) {
+        processSaveQueue();
+    }
+    // Flush pending deletes
+    if (deleteTimer) clearTimeout(deleteTimer);
+    if (deleteQueue.value.size > 0) {
+        processDeleteQueue();
     }
 });
 </script>
