@@ -575,12 +575,35 @@ async function addDrawing(drawingData) {
         text: drawingData.text,
         created_zoom: drawingData.createdZoom || drawingData.created_zoom,
         center_lat: centerLat,
-        center_lng: centerLng
+        center_lng: centerLng,
+        created_at: drawingData.created_at // Preserve original timestamp if available
     };
 
     // Optimistic UI: Add to local state immediately with syncing flag
     const optimisticDrawing = { ...newDrawing, id: tempId, isSyncing: true };
-    drawings.value.push(optimisticDrawing);
+    
+    // Insert into correct position based on created_at to maintain z-index
+    if (newDrawing.created_at) {
+        const insertTime = new Date(newDrawing.created_at).getTime();
+        // Find the first drawing that is NEWER than this one (we want to insert BEFORE it)
+        // Assuming drawings are sorted oldest -> newest (bottom -> top)
+        // Wait, fetchDrawings sorts by created_at DESC (newest first) but then reverses to push?
+        // Let's check fetchDrawings: "drawings.value.push(...newDrawings.reverse());"
+        // So drawings.value is sorted OLDEST -> NEWEST (index 0 is oldest, rendered first/bottom).
+        
+        let insertIndex = drawings.value.length;
+        for (let i = 0; i < drawings.value.length; i++) {
+            const dTime = new Date(drawings.value[i].created_at || 0).getTime();
+            if (dTime > insertTime) {
+                insertIndex = i;
+                break;
+            }
+        }
+        drawings.value.splice(insertIndex, 0, optimisticDrawing);
+    } else {
+        // New drawing (no created_at yet), push to end (top)
+        drawings.value.push(optimisticDrawing);
+    }
 
     console.log('App: Saving drawing payload (Optimistic):', newDrawing);
 
@@ -612,9 +635,19 @@ async function addDrawing(drawingData) {
             if (index !== -1) {
                 drawings.value.splice(index, 1, data);
             } else {
-                // If not found (maybe cleared?), just push
+                // If not found (maybe cleared?), insert correctly
                 if (!drawings.value.find(d => d.id === data.id)) {
-                    drawings.value.push(data);
+                    // Re-calculate insert position for safety
+                    let insertIndex = drawings.value.length;
+                    const insertTime = new Date(data.created_at).getTime();
+                    for (let i = 0; i < drawings.value.length; i++) {
+                        const dTime = new Date(drawings.value[i].created_at || 0).getTime();
+                        if (dTime > insertTime) {
+                            insertIndex = i;
+                            break;
+                        }
+                    }
+                    drawings.value.splice(insertIndex, 0, data);
                 }
             }
             return; // Success
@@ -655,7 +688,17 @@ async function addDrawing(drawingData) {
                 drawings.value.splice(index, 1, savedItem);
             } else {
                 if (!drawings.value.find(d => d.id === savedItem.id)) {
-                    drawings.value.push(savedItem);
+                     // Re-calculate insert position for safety
+                    let insertIndex = drawings.value.length;
+                    const insertTime = new Date(savedItem.created_at).getTime();
+                    for (let i = 0; i < drawings.value.length; i++) {
+                        const dTime = new Date(drawings.value[i].created_at || 0).getTime();
+                        if (dTime > insertTime) {
+                            insertIndex = i;
+                            break;
+                        }
+                    }
+                    drawings.value.splice(insertIndex, 0, savedItem);
                 }
             }
         } catch (fetchErr) {

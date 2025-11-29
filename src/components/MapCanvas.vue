@@ -725,7 +725,7 @@ const checkEraserHit = (latlng) => {
                 emit('remove-drawing', d.id);
             }
         } 
-        // 2. Handle Polylines (Geometric Splitting)
+        // 2. Handle Polylines (Stroke-based Eraser)
         else if (layer instanceof L.Polyline) {
             const latlngs = layer.getLatLngs();
             // Handle nested arrays (Leaflet can return [[lat,lng],...] for simple polylines)
@@ -736,120 +736,27 @@ const checkEraserHit = (latlng) => {
             // Convert all points to pixels for calculation
             const pixelPoints = points.map(p => mapInstance.value.latLngToContainerPoint(p));
             
-            let newSegments = [];
-            let currentSegment = [];
-            let hasChanges = false;
+            let hit = false;
 
-            // Start the first segment with the first point (if it's not inside eraser)
-            if (pixelPoints[0].distanceTo(eraserPoint) >= eraserRadius) {
-                currentSegment.push(points[0]);
-            } else {
-                hasChanges = true; // First point erased
-            }
-
-            for (let i = 0; i < pixelPoints.length - 1; i++) {
-                const p1 = pixelPoints[i];
-                const p2 = pixelPoints[i+1];
-                
-                // Check intersections for this segment
-                const ts = getSegmentCircleIntersections(p1, p2, eraserPoint, eraserRadius);
-                
-                const p2Inside = p2.distanceTo(eraserPoint) < eraserRadius;
-
-                if (ts.length === 0) {
-                    // No intersection. 
-                    if (p2Inside) {
-                        // Segment goes inside and stays there (or ends there). 
-                        // p2 is erased.
-                        hasChanges = true;
-                    } else {
-                        // Segment is fully outside (or fully inside but we checked endpoints).
-                        // If p1 was outside, p2 is outside, and no intersection -> fully outside.
-                        // We just add p2 to current segment.
-                        // (Unless p1 was inside, in which case we are still "erased" state... wait)
-                        
-                        // Simpler logic:
-                        // If we are currently "writing" a segment, and p2 is safe, add it.
-                        if (p1.distanceTo(eraserPoint) >= eraserRadius && !p2Inside) {
-                             currentSegment.push(points[i+1]);
-                        }
-                    }
-                } else {
-                    hasChanges = true;
-                    // We have intersections.
-                    // t is 0..1 along the segment.
-                    
-                    // Calculate intersection coordinates (Pixels -> LatLng)
-                    const getInterLatLng = (t) => {
-                        const ix = p1.x + t * (p2.x - p1.x);
-                        const iy = p1.y + t * (p2.y - p1.y);
-                        return mapInstance.value.containerPointToLatLng([ix, iy]);
-                    };
-
-                    if (ts.length === 1) {
-                        const t = ts[0];
-                        const interLatLng = getInterLatLng(t);
-                        
-                        if (p1.distanceTo(eraserPoint) < eraserRadius) {
-                            // Exiting the eraser: p1(in) -> inter -> p2(out)
-                            // Start a NEW segment at intersection
-                            if (currentSegment.length > 0) newSegments.push(currentSegment);
-                            currentSegment = [interLatLng, points[i+1]];
-                        } else {
-                            // Entering the eraser: p1(out) -> inter -> p2(in)
-                            // End current segment at intersection
-                            currentSegment.push(interLatLng);
-                            newSegments.push(currentSegment);
-                            currentSegment = [];
-                        }
-                    } else if (ts.length === 2) {
-                        // Passing through: p1(out) -> inter1 -> (inside) -> inter2 -> p2(out)
-                        const t1 = ts[0];
-                        const t2 = ts[1];
-                        
-                        // 1. End current segment at first intersection
-                        currentSegment.push(getInterLatLng(t1));
-                        newSegments.push(currentSegment);
-                        
-                        // 2. Start new segment at second intersection
-                        currentSegment = [getInterLatLng(t2), points[i+1]];
+            // 1. Check if any point is inside eraser
+            if (pixelPoints.some(p => p.distanceTo(eraserPoint) < eraserRadius)) {
+                hit = true;
+            } 
+            // 2. Check if any segment intersects eraser
+            else {
+                for (let i = 0; i < pixelPoints.length - 1; i++) {
+                    const p1 = pixelPoints[i];
+                    const p2 = pixelPoints[i+1];
+                    const ts = getSegmentCircleIntersections(p1, p2, eraserPoint, eraserRadius);
+                    if (ts.length > 0) {
+                        hit = true;
+                        break;
                     }
                 }
             }
-            
-            // Push the final segment if valid
-            if (currentSegment.length > 0) {
-                newSegments.push(currentSegment);
-            }
 
-            // Filter out single-point segments (noise)
-            newSegments = newSegments.filter(seg => seg.length >= 2);
-
-            if (hasChanges) {
-                if (newSegments.length === 0) {
-                    emit('remove-drawing', d.id);
-                } else {
-                    // Helper to format points
-                    const segmentToPoints = (seg) => seg.map(p => [p.lat, p.lng]);
-                    
-                    // Update original with first segment
-                    emit('update-drawing', {
-                        id: d.id,
-                        points: segmentToPoints(newSegments[0])
-                    });
-                    
-                    // Create new drawings for other segments
-                    for (let i = 1; i < newSegments.length; i++) {
-                        emit('add-drawing', {
-                            tool: d.tool,
-                            color: d.color,
-                            weight: d.weight,
-                            text: d.text,
-                            points: segmentToPoints(newSegments[i]),
-                            createdZoom: d.created_zoom || currentZoom
-                        });
-                    }
-                }
+            if (hit) {
+                emit('remove-drawing', d.id);
             }
         }
     });
