@@ -88,6 +88,10 @@ const markerText = ref('');
 const pendingMarkerPos = ref(null);
 const markerInputRef = ref(null);
 
+// Multi-touch and Eraser Safety State
+const activePointers = new Set();
+const eraserStartPos = ref(null);
+
 const infoText = computed(() => {
     if (props.tool === DrawingTool.HAND) return 'Drag to move map';
     if (props.tool === DrawingTool.BRUSH) return 'Hold LEFT button to draw. Hold MIDDLE button to pan.';
@@ -578,6 +582,17 @@ const confirmMarker = () => {
 const handlePointerDown = (e) => {
     if (props.tool === DrawingTool.HAND) return; // Let Leaflet handle panning
     
+    // Track active pointers for multi-touch detection
+    activePointers.add(e.pointerId);
+    
+    // If more than one pointer is active, it's a gesture (zoom/pinch). Cancel drawing.
+    if (activePointers.size > 1) {
+        isDrawingActive.value = false;
+        currentPoints.value = [];
+        renderTempDrawing();
+        return;
+    }
+
     // Allow multi-touch gestures to pass through if not drawing
     if (!e.isPrimary) return;
 
@@ -605,8 +620,9 @@ const handlePointerDown = (e) => {
         currentPoints.value = [[latlng.lat, latlng.lng]];
         renderTempDrawing();
     } else if (props.tool === DrawingTool.ERASER) {
+        // Eraser Safety: Don't delete on down. Record start pos for "Tap to Delete" logic.
         isErasing.value = true;
-        checkEraserHit(latlng);
+        eraserStartPos.value = { x: e.clientX, y: e.clientY };
     } else if (props.tool === DrawingTool.MARKER) {
         // Marker logic is usually on 'click' (up), but we can track down position
         pendingMarkerPos.value = [latlng.lat, latlng.lng];
@@ -615,6 +631,10 @@ const handlePointerDown = (e) => {
 
 const handlePointerMove = (e) => {
     if (props.tool === DrawingTool.HAND) return;
+    
+    // Multi-touch Safety: If multiple pointers, ignore move (it's a zoom/pan)
+    if (activePointers.size > 1) return;
+
     if (!isDrawingActive.value && !isErasing.value) return;
 
     e.preventDefault();
@@ -644,19 +664,15 @@ const handlePointerMove = (e) => {
                 renderTempDrawing();
             }
         }
-    } else if (isErasing.value && props.tool === DrawingTool.ERASER) {
-        // Eraser doesn't need coalesced events as much, but good to have
-        events.forEach(evt => {
-            const x = evt.clientX - rect.left;
-            const y = evt.clientY - rect.top;
-            const latlng = mapInstance.value.containerPointToLatLng([x, y]);
-            checkEraserHit(latlng);
-        });
-    }
+    } 
+    // Eraser Safety: Removed "Delete on Move" logic to prevent accidental swipe deletion.
+    // Deletion now happens on PointerUp (Tap) only.
 };
 
 const handlePointerUp = (e) => {
     if (props.tool === DrawingTool.HAND) return;
+
+    activePointers.delete(e.pointerId);
 
     const container = mapInstance.value.getContainer();
     if (container.hasPointerCapture(e.pointerId)) {
@@ -667,8 +683,22 @@ const handlePointerUp = (e) => {
         isDrawingActive.value = false;
         finishDrawing();
     }
-    if (isErasing.value) {
+    
+    if (isErasing.value && props.tool === DrawingTool.ERASER) {
         isErasing.value = false;
+        // Eraser Safety: Only delete if it was a "Tap" (minimal movement)
+        if (eraserStartPos.value) {
+            const dist = Math.hypot(e.clientX - eraserStartPos.value.x, e.clientY - eraserStartPos.value.y);
+            // Tolerance for "Tap": 10 pixels. If moved more, it's a swipe/pan/cancel.
+            if (dist < 10) {
+                const rect = container.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const latlng = mapInstance.value.containerPointToLatLng([x, y]);
+                checkEraserHit(latlng);
+            }
+        }
+        eraserStartPos.value = null;
     }
     
     if (props.tool === DrawingTool.MARKER && pendingMarkerPos.value) {
@@ -846,8 +876,8 @@ onMounted(() => {
     container.addEventListener('pointerdown', handlePointerDown);
     container.addEventListener('pointermove', handlePointerMove);
     container.addEventListener('pointerup', handlePointerUp);
-    container.addEventListener('pointercancel', handlePointerUp);
-    container.addEventListener('pointerleave', handlePointerUp);
+    container.addEventListener('pointercancel', handlePointerUp); // Treat cancel as up
+    container.addEventListener('pointerleave', handlePointerUp); // Treat leave as up
 
     renderDrawings();
     updateMapInteraction();
