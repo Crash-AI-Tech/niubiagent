@@ -1034,6 +1034,7 @@ onMounted(() => {
         zoomControl: false,
         attributionControl: false,
         renderer: L.canvas({ padding: 0.5 }),
+        maxZoom: MAP_MAX_ZOOM
     }));
     
     mapInstance.value = map;
@@ -1044,6 +1045,7 @@ onMounted(() => {
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap, &copy; CARTO',
         subdomains: 'abcd',
+        maxNativeZoom: 18,
         maxZoom: MAP_MAX_ZOOM 
     }).addTo(map);
 
@@ -1059,7 +1061,9 @@ onMounted(() => {
     container.addEventListener('touchmove', handleTouchMove, { passive: false });
     container.addEventListener('touchend', handleTouchEnd, { passive: false });
 
-    map.on('zoom', updateLayerStyles);
+    // Optimization: Update styles only on zoomend to allow "auto-stretch" behavior during animation
+    // and prevent heavy re-calculations on every frame.
+    map.on('zoomend', updateLayerStyles);
     
     // Save view state on moveend
     map.on('moveend', () => {
