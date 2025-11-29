@@ -1045,7 +1045,7 @@ onMounted(() => {
     L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
         attribution: '&copy; OpenStreetMap, &copy; CARTO',
         subdomains: 'abcd',
-        maxNativeZoom: 18,
+        maxNativeZoom: 19, // Optimization: CartoDB supports up to level 19
         maxZoom: MAP_MAX_ZOOM 
     }).addTo(map);
 
